@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Output
+**/output/
+**/results/
+
+# Models
+**/saved_models/
+
+# VS Code / IDEs
+.vscode/
+.idea/
