@@ -5,9 +5,6 @@ __pycache__/
 .venv/
 .env
 
-# Output
-**/output/
-**/results/
 
 # Models
 **/saved_models/
