@@ -535,6 +535,62 @@ def _fill_ellipse(ax, pts: np.ndarray, *, alpha: float, label: str | None = None
 # ============================================================
 # Final 4-panel figure
 # ============================================================
+def _set_plot_theme() -> None:
+    plt.rcParams.update({
+        "figure.dpi": 160,
+        "savefig.dpi": 220,
+        "font.size": 10.5,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
+        "legend.fontsize": 9.5,
+        "xtick.labelsize": 9.5,
+        "ytick.labelsize": 9.5,
+        "axes.linewidth": 0.9,
+        "grid.alpha": 0.22,
+        "grid.linewidth": 0.7,
+        "axes.grid": True,
+    })
+
+
+def _style_axis(ax, *, facecolor: str = "#FBFBFD") -> None:
+    ax.set_facecolor(facecolor)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_alpha(0.55)
+    ax.spines["bottom"].set_alpha(0.55)
+    ax.grid(True, alpha=0.20)
+
+
+def _points_limits(points: list[np.ndarray], pad_frac: float = 0.10) -> tuple[tuple[float, float], tuple[float, float]]:
+    """
+    Compute nice x/y limits from a list of (N,2) point arrays or (2,) vectors.
+    """
+    arrs = []
+    for p in points:
+        p = np.asarray(p, dtype=float)
+        if p.ndim == 1:
+            p = p[None, :]
+        if p.size > 0:
+            arrs.append(p[:, :2])
+    if not arrs:
+        return (-1.0, 1.0), (-1.0, 1.0)
+
+    P = np.vstack(arrs)
+    xmin, ymin = np.min(P[:, 0]), np.min(P[:, 1])
+    xmax, ymax = np.max(P[:, 0]), np.max(P[:, 1])
+
+    dx = max(xmax - xmin, 1e-6)
+    dy = max(ymax - ymin, 1e-6)
+
+    # force a bit more square-ish limits for prettier geometry/trajectory panels
+    d = max(dx, dy)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    pad = pad_frac * d + 1e-6
+
+    return (cx - 0.5 * d - pad, cx + 0.5 * d + pad), (cy - 0.5 * d - pad, cy + 0.5 * d + pad)
+
+
 def plot_attack_figure_four_panels(
     *,
     t: int,
@@ -553,13 +609,13 @@ def plot_attack_figure_four_panels(
     outpath: str,
 ) -> None:
     """
-    4 panels:
-      Left col:
-        (1) Ellipses + points in y-space (top-left)  [requires n_y=2]
-        (2) x1 time series with CI (middle-left)     [legend outside right]
-        (3) x2 time series with CI (bottom-left)     [legend outside right]
-      Right col:
-        (4) State-space trajectory (x1 vs x2) without CI (spans rows 2+3)
+    NUEVO layout (2x2):
+      Top row:
+        (A) x1 vs time (con CI)
+        (B) x2 vs time (con CI)
+      Bottom row:
+        (C) Geometría del ataque (elipses en y-space)
+        (D) Trayectoria en espacio de estados (x1 vs x2)
     """
     if y_t.shape != (2,) or mu_t.shape != (2,) or y_star.shape != (2,):
         raise ValueError("This plot expects n_y=2 (y_t/mu_t/y_star must be shape (2,)).")
@@ -570,69 +626,95 @@ def plot_attack_figure_four_panels(
     if x_true.shape[1] < 2:
         raise ValueError("Need at least 2 state dims to show x1 vs x2.")
 
-    plt.rcParams.update(
-        {
-            "figure.dpi": 140,
-            "font.size": 11,
-            "axes.titlesize": 14,
-            "axes.labelsize": 12,
-            "legend.fontsize": 10,
-        }
-    )
+    # Si mantienes los helpers que te pasé antes, se usarán aquí.
+    try:
+        _set_plot_theme()
+    except NameError:
+        plt.rcParams.update({
+            "figure.dpi": 160,
+            "savefig.dpi": 220,
+            "font.size": 10.5,
+            "axes.titlesize": 13,
+            "axes.labelsize": 11,
+            "legend.fontsize": 9,
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "axes.linewidth": 0.9,
+            "grid.alpha": 0.20,
+            "grid.linewidth": 0.7,
+        })
+
+    def _style_axis_local(ax):
+        ax.set_facecolor("#FBFBFD")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_alpha(0.55)
+        ax.spines["bottom"].set_alpha(0.55)
+        ax.grid(True, alpha=0.20)
+
+    def _points_limits_local(points: list[np.ndarray], pad_frac: float = 0.10):
+        arrs = []
+        for p in points:
+            p = np.asarray(p, dtype=float)
+            if p.ndim == 1:
+                p = p[None, :]
+            if p.size > 0:
+                arrs.append(p[:, :2])
+        if not arrs:
+            return (-1.0, 1.0), (-1.0, 1.0)
+        P = np.vstack(arrs)
+        xmin, ymin = np.min(P[:, 0]), np.min(P[:, 1])
+        xmax, ymax = np.max(P[:, 0]), np.max(P[:, 1])
+        dx = max(xmax - xmin, 1e-6)
+        dy = max(ymax - ymin, 1e-6)
+        d = max(dx, dy)
+        cx = 0.5 * (xmin + xmax)
+        cy = 0.5 * (ymin + ymax)
+        pad = pad_frac * d + 1e-6
+        return (cx - 0.5 * d - pad, cx + 0.5 * d + pad), (cy - 0.5 * d - pad, cy + 0.5 * d + pad)
+
+    # ---------- palette ----------
+    c_base = "#2F6FA8"   # azul
+    c_adv = "#C85B4F"    # terracota
+    c_true = "#2F2F2F"   # charcoal
+    c_geom1 = "#6A5ACD"  # constraint
+    c_geom2 = "#2CA58D"  # objective level-set
+    c_mu = "#6A5ACD"
+    c_y = "#111111"
+    c_star = "#D4A017"
+    c_attack_band = "#E9D8A6"
 
     T = x_true.shape[0] - 1
     tt = np.arange(T + 1)
     z = 1.96
 
-    # Use constrained_layout to avoid tight_layout warnings with external legends + aspect equal
-    fig = plt.figure(figsize=(15.2, 10.2), constrained_layout=True)
+    # Figura más grande para que respiren leyendas + ejes
+    fig = plt.figure(figsize=(17.0, 12.0), constrained_layout=True)
     gs = fig.add_gridspec(
-        nrows=3, ncols=2,
-        width_ratios=[1.25, 1.0],
-        height_ratios=[1.25, 1.0, 1.0],
-        wspace=0.35, hspace=0.40,
+        nrows=2, ncols=2,
+        width_ratios=[1.0, 1.0],
+        height_ratios=[1.0, 1.08],
+        wspace=0.18, hspace=0.16,
     )
 
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[1, 0])
-    ax3 = fig.add_subplot(gs[2, 0])
-    ax4 = fig.add_subplot(gs[1:, 1])
+    # ARRIBA: series temporales
+    ax_ts1 = fig.add_subplot(gs[0, 0])   # x1 vs t
+    ax_ts2 = fig.add_subplot(gs[0, 1])   # x2 vs t
 
-    # -----------------
-    # Panel 1: geometry
-    # -----------------
-    Sigma_t = project_to_psd(Sigma_t)
-    Sigma_inv = inv_psd(Sigma_t)
+    # ABAJO: elipses + trayectoria
+    ax_geom = fig.add_subplot(gs[1, 0])  # geometry ellipses
+    ax_traj = fig.add_subplot(gs[1, 1])  # state-space x1 vs x2
 
-    # Constraint boundary: (y-mu)^T Sigma^{-1} (y-mu) = epsilon
-    pts_constraint = _ellipse_points_from_quad(mu_t, Sigma_inv, epsilon)
+    for ax in [ax_ts1, ax_ts2, ax_geom, ax_traj]:
+        try:
+            _style_axis(ax)
+        except NameError:
+            _style_axis_local(ax)
 
-    # Objective level-set at optimum: (y-y_t)^T (X^T X) (y-y_t) = obj_star
-    M = project_to_psd(symmetrize(X_t.T @ X_t))
-    pts_obj = _ellipse_points_from_quad(y_t, M, obj_star)
-
-    _fill_ellipse(ax1, pts_constraint, alpha=0.18,
-              label=r"Constraint: $(y-\mu)^T\Sigma^{-1}(y-\mu)\leq \varepsilon$")
-    ax1.plot(pts_constraint[:, 0], pts_constraint[:, 1], linewidth=1.7, alpha=0.9)
-
-    _fill_ellipse(ax1, pts_obj, alpha=0.14, label=r"Objective level-set at optimum")
-    ax1.plot(pts_obj[:, 0], pts_obj[:, 1], linewidth=1.7, linestyle="--", alpha=0.9)
-
-    ax1.scatter([mu_t[0]], [mu_t[1]], s=55, marker="o", label=r"$\mu_t$", zorder=5)
-    ax1.scatter([y_t[0]], [y_t[1]], s=60, marker="x", label=r"$y_t$", zorder=6)
-    ax1.scatter([y_star[0]], [y_star[1]], s=85, marker="*", label=r"$y^\star$", zorder=7)
-
-    ax1.set_title(f"Attack geometry at t={t} (ε={epsilon:.3f})")
-    ax1.set_xlabel("y component 1")
-    ax1.set_ylabel("y component 2")
-    ax1.grid(True, alpha=0.20)
-    ax1.set_aspect("equal", adjustable="datalim")
-    ax1.legend(loc="best", frameon=True)
-
-    # -----------------------------------------
-    # Panels 2 & 3: time series with CI, legends outside
-    # -----------------------------------------
-    def plot_state_time(ax, idx: int, title: str) -> None:
+    # =========================================================
+    # TOP ROW: time-series panels (x1 and x2)
+    # =========================================================
+    def _plot_state_time(ax, idx: int, panel_title: str) -> None:
         x_line = x_true[:, idx]
         m_base = m_smooth_base[:, idx]
         sd_base = np.sqrt(np.maximum(P_smooth_base[:, idx, idx], 0.0))
@@ -640,55 +722,173 @@ def plot_attack_figure_four_panels(
         m_adv = m_smooth_adv[:, idx]
         sd_adv = np.sqrt(np.maximum(P_smooth_adv[:, idx, idx], 0.0))
 
-        ax.fill_between(tt, m_base - z * sd_base, m_base + z * sd_base, alpha=0.18, label="Base RTS 95% CI")
-        ax.plot(tt, m_base, linewidth=1.35, label="Base RTS mean")
+        # Banda vertical del instante atacado
+        ax.axvspan(t - 0.35, t + 0.35, color=c_attack_band, alpha=0.28, zorder=0)
+        ax.axvline(t, color="#8D6E63", linewidth=1.0, alpha=0.45)
 
-        ax.fill_between(tt, m_adv - z * sd_adv, m_adv + z * sd_adv, alpha=0.12, label="Adversarial RTS 95% CI")
-        ax.plot(tt, m_adv, linewidth=1.35, linestyle="--", label="Adversarial RTS mean")
+        # Base
+        ax.fill_between(
+            tt, m_base - z * sd_base, m_base + z * sd_base,
+            color=c_base, alpha=0.18, label="Base 95% CI", zorder=1
+        )
+        ax.plot(tt, m_base, color=c_base, linewidth=1.9, label="Base RTS mean", zorder=3)
 
-        ax.plot(tt, x_line, marker="o", markersize=2.8, linewidth=1.05, label=f"True x[{idx}]")
-        ax.axvline(t, linewidth=1.0, alpha=0.35)
+        # Adversarial
+        ax.fill_between(
+            tt, m_adv - z * sd_adv, m_adv + z * sd_adv,
+            color=c_adv, alpha=0.13, label="Adv 95% CI", zorder=1
+        )
+        ax.plot(tt, m_adv, color=c_adv, linewidth=1.9, linestyle="--", label="Adv RTS mean", zorder=3)
 
-        ax.set_title(title)
-        ax.set_xlabel("time t")
-        ax.set_ylabel(f"x component {idx}")
-        ax.grid(True, alpha=0.20)
-
-        ax.legend(
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            frameon=True,
-            borderaxespad=0.0,
+        # True state
+        ax.plot(
+            tt, x_line, color=c_true, marker="o", markersize=2.6,
+            linewidth=1.1, alpha=0.9, label=f"True x[{idx}]", zorder=2
         )
 
-    plot_state_time(ax2, idx=0, title="Hidden state impact on x1 (component 0)")
-    plot_state_time(ax3, idx=1, title="Hidden state impact on x2 (component 1)")
+        # Marcadores en t
+        ax.scatter([t], [x_line[t]], color=c_true, s=28, zorder=5)
+        ax.scatter([t], [m_base[t]], color=c_base, s=30, zorder=5)
+        ax.scatter([t], [m_adv[t]], color=c_adv, s=34, marker="D", zorder=5)
 
-    # -----------------------------------------
-    # Panel 4: state-space trajectory (x1 vs x2), no CI
-    # -----------------------------------------
+        ax.set_title(panel_title, loc="left", fontweight="semibold")
+        ax.set_xlabel("time t")
+        ax.set_ylabel(f"x[{idx}]")
+        ax.margins(x=0.02)
+
+        # Leyenda compacta dentro (sin montarse)
+        ax.legend(
+            loc="upper right",
+            frameon=True,
+            framealpha=0.94,
+            ncol=2,
+            columnspacing=0.9,
+            handlelength=1.8,
+            borderpad=0.45,
+        )
+
+    _plot_state_time(ax_ts1, idx=0, panel_title="(A) Attack impact on x1 over time")
+    _plot_state_time(ax_ts2, idx=1, panel_title="(B) Attack impact on x2 over time")
+
+    # =========================================================
+    # BOTTOM-LEFT: geometry (ellipses)
+    # =========================================================
+    Sigma_t = project_to_psd(Sigma_t)
+    Sigma_inv = inv_psd(Sigma_t)
+
+    pts_constraint = _ellipse_points_from_quad(mu_t, Sigma_inv, epsilon)
+
+    M = project_to_psd(symmetrize(X_t.T @ X_t))
+    M_plot = project_to_psd(M, eps=1e-8)  # regularización solo para dibujar
+    pts_obj = _ellipse_points_from_quad(y_t, M_plot, max(obj_star, 1e-10))
+
+    ax_geom.fill(
+        pts_constraint[:, 0], pts_constraint[:, 1],
+        color=c_geom1, alpha=0.14, label="Constraint region"
+    )
+    ax_geom.plot(
+        pts_constraint[:, 0], pts_constraint[:, 1],
+        color=c_geom1, linewidth=2.0, alpha=0.95
+    )
+
+    ax_geom.fill(
+        pts_obj[:, 0], pts_obj[:, 1],
+        color=c_geom2, alpha=0.10, label="Objective level-set"
+    )
+    ax_geom.plot(
+        pts_obj[:, 0], pts_obj[:, 1],
+        color=c_geom2, linewidth=1.8, linestyle="--", alpha=0.95
+    )
+
+    ax_geom.scatter([mu_t[0]], [mu_t[1]], s=55, marker="o", color=c_mu, label=r"$\mu_t$", zorder=5)
+    ax_geom.scatter([y_t[0]], [y_t[1]], s=65, marker="x", linewidths=2.0, color=c_y, label=r"$y_t$", zorder=6)
+    ax_geom.scatter([y_star[0]], [y_star[1]], s=120, marker="*", color=c_star, edgecolor="black",
+                    linewidths=0.4, label=r"$y^\star$", zorder=7)
+
+    ax_geom.plot([y_t[0], y_star[0]], [y_t[1], y_star[1]],
+                 color=c_adv, linewidth=1.4, alpha=0.85, linestyle="-.", zorder=4)
+
+    try:
+        (xlim_g, ylim_g) = _points_limits([pts_constraint, pts_obj, y_t, mu_t, y_star], pad_frac=0.12)
+    except NameError:
+        (xlim_g, ylim_g) = _points_limits_local([pts_constraint, pts_obj, y_t, mu_t, y_star], pad_frac=0.12)
+
+    ax_geom.set_xlim(*xlim_g)
+    ax_geom.set_ylim(*ylim_g)
+
+    ax_geom.set_title(f"(C) Attack geometry at t={t}", loc="left", fontweight="semibold")
+    ax_geom.set_xlabel("y[0]")
+    ax_geom.set_ylabel("y[1]")
+    ax_geom.set_aspect("equal", adjustable="box")
+    ax_geom.legend(loc="upper right", frameon=True, framealpha=0.94)
+
+    # =========================================================
+    # BOTTOM-RIGHT: trajectory in state-space (x1 vs x2)
+    # =========================================================
     x_true_xy = x_true[:, :2]
     base_xy = m_smooth_base[:, :2]
     adv_xy = m_smooth_adv[:, :2]
 
-    ax4.plot(x_true_xy[:, 0], x_true_xy[:, 1], linewidth=1.1, marker="o", markersize=2.6, label="True state path")
-    ax4.plot(base_xy[:, 0], base_xy[:, 1], linewidth=1.6, label="Base RTS path")
-    ax4.plot(adv_xy[:, 0], adv_xy[:, 1], linewidth=1.6, linestyle="--", label="Adversarial RTS path")
+    ax_traj.plot(
+        x_true_xy[:, 0], x_true_xy[:, 1],
+        color=c_true, linewidth=1.2, marker="o", markersize=2.4,
+        alpha=0.85, label="True path"
+    )
+    ax_traj.plot(
+        base_xy[:, 0], base_xy[:, 1],
+        color=c_base, linewidth=2.0, label="Base RTS path"
+    )
+    ax_traj.plot(
+        adv_xy[:, 0], adv_xy[:, 1],
+        color=c_adv, linewidth=2.0, linestyle="--", label="Adv RTS path"
+    )
 
-    ax4.scatter([base_xy[t, 0]], [base_xy[t, 1]], s=60, marker="o", zorder=6, label="Base at t")
-    ax4.scatter([adv_xy[t, 0]], [adv_xy[t, 1]], s=70, marker="*", zorder=7, label="Adv at t")
+    # Start/end
+    ax_traj.scatter([x_true_xy[0, 0]], [x_true_xy[0, 1]],
+                    marker="s", s=70, color="#2E7D32", edgecolor="black", linewidths=0.4, zorder=7, label="Start")
+    ax_traj.scatter([x_true_xy[-1, 0]], [x_true_xy[-1, 1]],
+                    marker="X", s=85, color="#B71C1C", edgecolor="black", linewidths=0.4, zorder=7, label="End")
 
-    ax4.set_title("State-space view (x1 vs x2) — no CI")
-    ax4.set_xlabel("x1 (component 0)")
-    ax4.set_ylabel("x2 (component 1)")
-    ax4.grid(True, alpha=0.20)
-    ax4.set_aspect("equal", adjustable="datalim")
-    ax4.legend(loc="best", frameon=True)
+    # Highlight attack time
+    ax_traj.scatter([base_xy[t, 0]], [base_xy[t, 1]],
+                    s=65, marker="o", color=c_base, edgecolor="white", linewidths=0.7, zorder=8, label="Base at t")
+    ax_traj.scatter([adv_xy[t, 0]], [adv_xy[t, 1]],
+                    s=95, marker="*", color=c_star, edgecolor="black", linewidths=0.5, zorder=9, label="Adv at t")
 
-    os.makedirs(os.path.dirname(outpath), exist_ok=True)
-    fig.savefig(outpath, bbox_inches="tight")
+    ax_traj.plot([base_xy[t, 0], adv_xy[t, 0]], [base_xy[t, 1], adv_xy[t, 1]],
+                 color=c_adv, linestyle=":", linewidth=1.2, alpha=0.9, zorder=6)
+
+    try:
+        (xlim_tr, ylim_tr) = _points_limits([x_true_xy, base_xy, adv_xy], pad_frac=0.10)
+    except NameError:
+        (xlim_tr, ylim_tr) = _points_limits_local([x_true_xy, base_xy, adv_xy], pad_frac=0.10)
+
+    ax_traj.set_xlim(*xlim_tr)
+    ax_traj.set_ylim(*ylim_tr)
+
+    ax_traj.set_title("(D) State-space trajectory (x1 vs x2)", loc="left", fontweight="semibold")
+    ax_traj.set_xlabel("x1 (component 0)")
+    ax_traj.set_ylabel("x2 (component 1)")
+    ax_traj.set_aspect("equal", adjustable="box")
+    ax_traj.legend(loc="upper right", frameon=True, framealpha=0.94)
+
+    # Título global
+    fig.suptitle(
+        f"KKT adversarial observation attack at t={t} | ε={epsilon:.3f} | objective={obj_star:.4f}",
+        fontsize=14,
+        fontweight="semibold",
+        y=0.995,
+    )
+
+    fig.align_ylabels([ax_ts1, ax_ts2, ax_geom, ax_traj])
+
+    out_dir = os.path.dirname(outpath)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # PNG ONLY (como me pediste)
+    fig.savefig(outpath, facecolor="white", dpi=300)
     plt.close(fig)
-
 
 # ============================================================
 # MAIN

@@ -49,14 +49,14 @@ SIGMA_OBS = 1.0             # observation noise used for NOISY and for ADV "real
 PROC_NOISE_STD = 0.05       # environment process noise
 
 # Attack settings
-EPSILON_KKT = 5.991         # Chi-square df=2, 95%
-P_ATTACK = 0.85              # attack applied with probability p each step (from 2nd obs), else normal noise
+EPSILON_KKT = 10.991         # Chi-square df=2, 95%
+P_ATTACK = 0.50              # attack applied with probability p each step (from 2nd obs), else normal noise
 
 # Environment
-GOAL_R_MIN = 2.5
-GOAL_R_MAX = 15.0
-MAX_STEPS = 25
-GOAL_RADIUS = 2.5
+GOAL_R_MIN = 5.0
+GOAL_R_MAX = 25.0
+MAX_STEPS = 40
+GOAL_RADIUS = 1.5
 
 MODEL_PATH = os.path.join("RL", "saved_models", "AdvRL_policy.pt")
 OUT_DIR = os.path.join("RL", "results")
@@ -325,7 +325,7 @@ def rollout_adv(
         S_pred = P_shadow + R
         K_pred = P_shadow @ np.linalg.inv(S_pred)
 
-        do_attack = (step_idx > 0) and (rng.random() < p_attack)
+        do_attack = (step_idx > 1) and (rng.random() < p_attack)
 
         if not do_attack:
             z_adv = z_real.copy()
@@ -436,8 +436,6 @@ def plot_10_simulations_3agents(model: ActorCritic, device: torch.device, sigma:
         ax.tick_params(colors=ink, labelsize=9)
 
         # IMPORTANT: limits first, then aspect "box" to avoid warnings
-        ax.set_xlim(-lim, lim)
-        ax.set_ylim(-lim, lim)
         ax.set_aspect("equal", adjustable="box")
 
         ep_seed = SEED + 1000 + i
