@@ -214,7 +214,7 @@ class ActorCritic(nn.Module):
 
 @dataclass
 class PPOConfig:
-    total_steps: int = 250_000
+    total_steps: int = 2_000_000
     rollout_len: int = 2048
     gamma: float = 0.99
     lam: float = 0.95

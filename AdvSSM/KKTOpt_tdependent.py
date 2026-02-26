@@ -490,7 +490,7 @@ def sample_random_ssm_run_params(
     n_x: int = 2,
     n_y: int = 2,
     n_u: int = 2,
-    std: float = 2.0,  # N(0, 4) <=> std = 2
+    std: float = 8.0,  # variance 4
 ) -> dict[str, np.ndarray]:
     """
     Sample one random SSM run with entries ~ N(0,4) for A0,B0,H0,D0.
@@ -523,405 +523,24 @@ def sample_random_ssm_run_params(
 
 
 # ============================================================
-# Kalman Filter + RTS smoother (ND)
+# Monte Carlo evaluation
 # ============================================================
-def kalman_filter_nd(
-    *,
-    y: np.ndarray,          # (T+1, n_y)
-    u: np.ndarray,          # (T,   n_u)
-    A_t: np.ndarray,        # (T+1, n_x, n_x)
-    B_t: np.ndarray,        # (T+1, n_x, n_u)
-    H_t: np.ndarray,        # (T+1, n_y, n_x)
-    D_t: np.ndarray,        # (T+1, n_y, n_u)
-    Q_t: np.ndarray,        # (T+1, n_x, n_x)
-    R_t: np.ndarray,        # (T+1, n_y, n_y)
-    m0: np.ndarray,         # (n_x,)
-    P0: np.ndarray,         # (n_x,n_x)
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    T = y.shape[0] - 1
-    n_x = P0.shape[0]
-    I = np.eye(n_x)
-
-    def u_state_at(k: int) -> np.ndarray:
-        """
-        Input used in state transition x[k] -> x[k+1]:
-            x[k+1] = A_t[k] x[k] + B_t[k] u[k] + w
-        """
-        if not (0 <= k < T):
-            raise IndexError(f"u_state_at({k}) out of range for T={T}")
-        return u[k]
-
-    def u_meas_at(k: int) -> np.ndarray:
-        """
-        Input used in measurement y[k].
-
-        Consistent with simulate_lgssm_nd:
-          y[0] = H_0 x[0] + D_0 u[0] + v_0
-          y[k] = H_k x[k] + D_k u[k-1] + v_k   for k >= 1
-        """
-        if T == 0:
-            return np.zeros(D_t.shape[2], dtype=float)
-        if k == 0:
-            return u[0]
-        if 1 <= k <= T:
-            return u[k - 1]
-        raise IndexError(f"u_meas_at({k}) out of range for T={T}")
-
-    m_pred = np.zeros((T + 1, n_x))
-    P_pred = np.zeros((T + 1, n_x, n_x))
-    m_filt = np.zeros((T + 1, n_x))
-    P_filt = np.zeros((T + 1, n_x, n_x))
-
-    m_pred[0] = m0
-    P_pred[0] = P0
-
-    for k in range(T + 1):
-        Hk = H_t[k]
-        Dk = D_t[k]
-        Rk = project_to_psd(R_t[k])
-        uk_meas = u_meas_at(k)
-
-        y_hat = Hk @ m_pred[k] + Dk @ uk_meas
-        S = Hk @ P_pred[k] @ Hk.T + Rk
-        K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
-
-        innov = y[k] - y_hat
-        m_filt[k] = m_pred[k] + K @ innov
-        P_filt[k] = (I - K @ Hk) @ P_pred[k]
-
-        if k < T:
-            Ak = A_t[k]
-            Bk = B_t[k]
-            Qk = project_to_psd(Q_t[k])
-            uk_state = u_state_at(k)
-
-            # FIXED: use u[k], not u[k+1]
-            m_pred[k + 1] = Ak @ m_filt[k] + Bk @ uk_state
-            P_pred[k + 1] = Ak @ P_filt[k] @ Ak.T + Qk
-
-    return m_filt, P_filt, m_pred, P_pred
-
-
-def rts_smoother_nd(
-    *,
-    m_filt: np.ndarray,
-    P_filt: np.ndarray,
-    m_pred: np.ndarray,
-    P_pred: np.ndarray,
-    A_t: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    T = m_filt.shape[0] - 1
-    m_smooth = np.zeros_like(m_filt)
-    P_smooth = np.zeros_like(P_filt)
-
-    m_smooth[T] = m_filt[T]
-    P_smooth[T] = P_filt[T]
-
-    for k in range(T - 1, -1, -1):
-        Ak = A_t[k]
-        Ck = P_filt[k] @ Ak.T @ np.linalg.inv(P_pred[k + 1])
-        m_smooth[k] = m_filt[k] + Ck @ (m_smooth[k + 1] - m_pred[k + 1])
-        P_smooth[k] = P_filt[k] + Ck @ (P_smooth[k + 1] - P_pred[k + 1]) @ Ck.T
-
-    return m_smooth, P_smooth
-
-
-# ============================================================
-# Leave-one-out p(y_t | y_-t) + X_t (corrected indexing)
-# ============================================================
-def loo_values_nd(
-    *,
-    t: int,
-    y: np.ndarray,
-    u: np.ndarray,
-    A_t: np.ndarray,
-    B_t: np.ndarray,
-    H_t: np.ndarray,
-    D_t: np.ndarray,
-    Q_t: np.ndarray,
-    R_t: np.ndarray,
-    P0: np.ndarray,
-    m0: np.ndarray,
-) -> list[np.ndarray]:
-    """
-    Returns [X_t, mu_y_t_given_minus_t, Sigma_y_t_given_minus_t].
-    """
-    T = int(y.shape[0] - 1)
-    if not (0 <= t <= T):
-        raise ValueError("t out of range")
-
-    n_x = P0.shape[0]
-    n_u = D_t.shape[2]
-    I_x = np.eye(n_x)
-
-    def u_state_at(k: int) -> np.ndarray:
-        if not (0 <= k < T):
-            raise IndexError(f"u_state_at({k}) out of range for T={T}")
-        return u[k]
-
-    def u_meas_at(k: int) -> np.ndarray:
-        if T == 0:
-            return np.zeros(n_u, dtype=float)
-        if k == 0:
-            return u[0]
-        if 1 <= k <= T:
-            return u[k - 1]
-        raise IndexError(f"u_meas_at({k}) out of range for T={T}")
-
-    # --------------------------------------------------------
-    # KF covariances + gains (needed for X_t)
-    # --------------------------------------------------------
-    P_pred = [None] * (T + 1)
-    P_filt = [None] * (T + 1)
-    K_kf = [None] * (T + 1)
-
-    P_pred[0] = P0.copy()
-
-    for k in range(T + 1):
-        Hk = H_t[k]
-        Rk = project_to_psd(R_t[k])
-
-        S = Hk @ P_pred[k] @ Hk.T + Rk
-        K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
-
-        P_filt[k] = (I_x - K @ Hk) @ P_pred[k]
-        K_kf[k] = K
-
-        if k < T:
-            Ak = A_t[k]
-            Qk = project_to_psd(Q_t[k])
-            P_pred[k + 1] = Ak @ P_filt[k] @ Ak.T + Qk
-
-    # RTS gains
-    J = [np.zeros((n_x, n_x)) for _ in range(T + 1)]
-    for k in range(T):
-        Ak = A_t[k]
-        J[k] = P_filt[k] @ Ak.T @ np.linalg.inv(P_pred[k + 1])
-
-    def prod_right(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in mats:
-            out = out @ M
-        return out
-
-    def prod_left(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in reversed(mats):
-            out = out @ M
-        return out
-
-    # --------------------------------------------------------
-    # X_t formula
-    # --------------------------------------------------------
-    l = T - t
-    total = np.zeros((n_x, n_x))
-    for i in range(l + 1):
-        prodJ = np.eye(n_x) if i == 0 else prod_right([J[t + j] for j in range(i)])
-
-        if t + i >= T:
-            mid = np.eye(n_x)
-        else:
-            mid = np.eye(n_x) - J[t + i] @ A_t[t + i]
-
-        factors = [((np.eye(n_x) - K_kf[t + j] @ H_t[t + j]) @ A_t[t + j]) for j in range(i + 1) if (t + j) < T]
-        prodKH = prod_left(factors) if len(factors) > 0 else np.eye(n_x)
-
-        total = total + (prodJ @ mid @ prodKH)
-
-    X_t_out = total @ K_kf[t]
-
-    # --------------------------------------------------------
-    # Forward means with y_t excluded
-    # --------------------------------------------------------
-    m_pred = [None] * (T + 1)
-    m_filt = [None] * (T + 1)
-    m_pred[0] = m0.copy()
-
-    for k in range(T + 1):
-        if k == t:
-            m_filt[k] = m_pred[k]
-        else:
-            Hk = H_t[k]
-            Dk = D_t[k]
-            Rk = project_to_psd(R_t[k])
-            uk_meas = u_meas_at(k)
-
-            y_hat = Hk @ m_pred[k] + Dk @ uk_meas
-            S = Hk @ P_pred[k] @ Hk.T + Rk
-            K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
-
-            m_filt[k] = m_pred[k] + K @ (y[k] - y_hat)
-
-        if k < T:
-            Ak = A_t[k]
-            Bk = B_t[k]
-            uk_state = u_state_at(k)
-
-            # FIXED: use u[k], not u[k+1]
-            m_pred[k + 1] = Ak @ m_filt[k] + Bk @ uk_state
-
-    # --------------------------------------------------------
-    # Backward info-form messages excluding measurement at t
-    # --------------------------------------------------------
-    Lambda = [None] * (T + 1)
-    eta = [None] * (T + 1)
-    Lambda[T] = np.zeros((n_x, n_x))
-    eta[T] = np.zeros((n_x,))
-
-    for k in range(T - 1, -1, -1):
-        kp1 = k + 1
-
-        # Transition x_k -> x_{k+1} uses index k
-        Ak = A_t[k]
-        Bk = B_t[k]
-        Qk = project_to_psd(Q_t[k])
-
-        # Measurement at time k+1 uses index kp1
-        Hkp1 = H_t[kp1]
-        Dkp1 = D_t[kp1]
-        Rkp1 = project_to_psd(R_t[kp1])
-        ukp1_meas = u_meas_at(kp1)
-        uk_state = u_state_at(k)
-
-        if kp1 == t:
-            barLambda = Lambda[kp1]
-            barEta = eta[kp1]
-        else:
-            tilde_y = y[kp1] - Dkp1 @ ukp1_meas
-            Rinv = np.linalg.inv(Rkp1)
-            barLambda = Lambda[kp1] + Hkp1.T @ Rinv @ Hkp1
-            barEta = eta[kp1] + Hkp1.T @ Rinv @ tilde_y
-
-        Qinv = np.linalg.inv(Qk)
-        S_back = Qinv + barLambda
-        S_back_inv = np.linalg.inv(S_back)
-
-        core = Qinv - Qinv @ S_back_inv @ Qinv
-        Lambda[k] = Ak.T @ core @ Ak
-
-        term1 = Ak.T @ Qinv @ S_back_inv @ barEta
-        term2 = Ak.T @ Qinv @ S_back_inv @ barLambda @ (Bk @ uk_state)
-        eta[k] = term1 - term2
-
-    # --------------------------------------------------------
-    # Combine at time t to get p(y_t | y_-t)
-    # --------------------------------------------------------
-    P_t_minus = np.linalg.inv(np.linalg.inv(P_pred[t]) + Lambda[t])
-    m_t_minus = P_t_minus @ (np.linalg.inv(P_pred[t]) @ m_pred[t] + eta[t])
-
-    mu_y = H_t[t] @ m_t_minus + D_t[t] @ u_meas_at(t)
-    Sigma_y = H_t[t] @ P_t_minus @ H_t[t].T + project_to_psd(R_t[t])
-
-    return [X_t_out, mu_y, Sigma_y]
-
-
-# ============================================================
-# KKT attack solver
-# ============================================================
-def solve_kkt_max_quadratic_over_ellipsoid(
-    *,
-    X: np.ndarray,          # (n_x, n_y)
-    y_t: np.ndarray,        # (n_y,)
-    mu: np.ndarray,         # (n_y,)
-    Sigma: np.ndarray,      # (n_y, n_y)
-    epsilon: float,
-    tol: float = 1e-12,
-    max_iter: int = 250,
-) -> tuple[np.ndarray, float]:
-    """
-    Solve:
-      maximize_y ||X (y - y_t)||^2
-      s.t.       (y - mu)^T Sigma^{-1} (y - mu) <= epsilon
-    """
-    if epsilon <= 0:
-        raise ValueError("epsilon must be > 0")
-
-    Sigma = project_to_psd(Sigma)
-    S = sqrtm_psd(Sigma)
-    M = project_to_psd(symmetrize(X.T @ X))
-
-    d = (mu - y_t).reshape(-1)
-    A = symmetrize(S.T @ M @ S)
-    b = (S.T @ M @ d).reshape(-1)
-
-    a, U = np.linalg.eigh(A)
-    a_max = float(np.max(a))
-    bp = U.T @ b
-
-    if np.linalg.norm(b) < 1e-14:
-        idx = int(np.argmax(a))
-        zp = np.zeros_like(bp)
-        zp[idx] = np.sqrt(epsilon)
-        z = U @ zp
-    else:
-        def g(lam: float) -> float:
-            zi = -bp / (a - lam)
-            return float(np.dot(zi, zi) - epsilon)
-
-        lam_low = a_max + 1e-12
-        f_low = g(lam_low)
-        if f_low <= 0:
-            lam_low = a_max + 1e-16
-            f_low = g(lam_low)
-
-        lam_high = a_max + 1.0
-        f_high = g(lam_high)
-        while f_high > 0:
-            lam_high *= 2.0
-            f_high = g(lam_high)
-            if lam_high > 1e14:
-                raise RuntimeError("Failed to bracket lambda in KKT solve.")
-
-        for _ in range(max_iter):
-            lam_mid = 0.5 * (lam_low + lam_high)
-            f_mid = g(lam_mid)
-            if abs(f_mid) < tol:
-                lam_low = lam_high = lam_mid
-                break
-            if f_mid > 0:
-                lam_low = lam_mid
-            else:
-                lam_high = lam_mid
-
-        lam_star = 0.5 * (lam_low + lam_high)
-        zp = -bp / (a - lam_star)
-        z = U @ zp
-
-        nz = np.linalg.norm(z)
-        if nz > 0:
-            z = z * (np.sqrt(epsilon) / nz)
-
-    y_star = mu + S @ z
-    obj_star = float(np.linalg.norm(X @ (y_star - y_t)) ** 2)
-    return y_star, obj_star
-
-
-# ============================================================
-# Monte Carlo evaluation for MULTIPLE epsilons
-# ============================================================
-def evaluate_attack_effects_single_run_multi_epsilon(
+def evaluate_attack_effects_single_run(
     *,
     run_seed: int,
     T: int,
     t_values: np.ndarray,
-    epsilons: list[float] | np.ndarray,
-    entry_variance: float = 4.0,
+    epsilon: float,
+    var_entries: float = 8.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     For one random SSM:
       - simulate once
-      - for each attacked time t in t_values:
-          * compute loo_values once
-          * for each epsilon, attack only y[t]
+      - for each attacked time t in t_values, replace only y[t] with KKT y*
       - compute local and global effects
-
-    Returns
-    -------
-    local_effects  : (n_eps, n_t)
-    global_effects : (n_eps, n_t)
     """
     rng = np.random.default_rng(run_seed)
-    std = float(np.sqrt(entry_variance))  # variance 4 => std 2
+    std = float(np.sqrt(var_entries))  # sqrt(4)=2
 
     params = sample_random_ssm_run_params(rng, n_x=2, n_y=2, n_u=2, std=std)
 
@@ -937,21 +556,15 @@ def evaluate_attack_effects_single_run_multi_epsilon(
     x_true, y, u, mats = simulate_lgssm_nd(
         A0=params["A0"], B0=params["B0"], H0=params["H0"], D0=params["D0"],
         T=T, seed=run_seed, x0=params["x0"], Q0=params["Q0"], R0=params["R0"],
-        dA=zeros["dA"], dB=zeros["dB"], dH=zeros["dH"], dD=zeros["dD"],
-        dQ=zeros["dQ"], dR=zeros["dR"],
+        dA=zeros["dA"], dB=zeros["dB"], dH=zeros["dH"], dD=zeros["dD"], dQ=zeros["dQ"], dR=zeros["dR"],
         u_low=-0.5, u_high=0.5,
     )
 
-    epsilons = np.asarray(epsilons, dtype=float)
-    n_eps = len(epsilons)
-    n_t = len(t_values)
+    local_effects = np.full(len(t_values), np.nan, dtype=float)
+    global_effects = np.full(len(t_values), np.nan, dtype=float)
 
-    local_effects = np.full((n_eps, n_t), np.nan, dtype=float)
-    global_effects = np.full((n_eps, n_t), np.nan, dtype=float)
-
-    for tidx, t in enumerate(t_values):
+    for idx, t in enumerate(t_values):
         try:
-            # This does not depend on epsilon -> compute once per t
             X_t, mu_t, Sigma_t = loo_values_nd(
                 t=int(t), y=y, u=u,
                 A_t=mats["A_t"], B_t=mats["B_t"],
@@ -960,40 +573,31 @@ def evaluate_attack_effects_single_run_multi_epsilon(
                 P0=params["P0"], m0=params["m0"],
             )
 
-            for eidx, eps in enumerate(epsilons):
-                y_star, _ = solve_kkt_max_quadratic_over_ellipsoid(
-                    X=X_t,
-                    y_t=y[t],
-                    mu=mu_t,
-                    Sigma=Sigma_t,
-                    epsilon=float(eps),
-                )
+            y_star, _ = solve_kkt_max_quadratic_over_ellipsoid(
+                X=X_t, y_t=y[t], mu=mu_t, Sigma=Sigma_t, epsilon=epsilon
+            )
 
-                y_adv = y.copy()
-                y_adv[t] = y_star  # attack only one time t
+            y_adv = y.copy()
+            y_adv[t] = y_star  # attack only one time
 
-                m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
-                    y=y_adv, u=u,
-                    A_t=mats["A_t"], B_t=mats["B_t"],
-                    H_t=mats["H_t"], D_t=mats["D_t"],
-                    Q_t=mats["Q_t"], R_t=mats["R_t"],
-                    m0=params["m0"], P0=params["P0"],
-                )
-                m_smooth_a, _ = rts_smoother_nd(
-                    m_filt=m_filt_a, P_filt=P_filt_a,
-                    m_pred=m_pred_a, P_pred=P_pred_a,
-                    A_t=mats["A_t"],
-                )
+            m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
+                y=y_adv, u=u,
+                A_t=mats["A_t"], B_t=mats["B_t"],
+                H_t=mats["H_t"], D_t=mats["D_t"],
+                Q_t=mats["Q_t"], R_t=mats["R_t"],
+                m0=params["m0"], P0=params["P0"],
+            )
+            m_smooth_a, _ = rts_smoother_nd(
+                m_filt=m_filt_a, P_filt=P_filt_a,
+                m_pred=m_pred_a, P_pred=P_pred_a,
+                A_t=mats["A_t"],
+            )
 
-                # Local effect at attacked time
-                local_effects[eidx, tidx] = float(
-                    np.sum(np.abs(x_true[t] - m_smooth_a[t]))
-                )
+            # Local effect at attacked time
+            local_effects[idx] = float(np.sum(np.abs(x_true[t] - m_smooth_a[t])))
 
-                # Global effect over all times and hidden dims
-                global_effects[eidx, tidx] = float(
-                    np.sum(np.abs(x_true - m_smooth_a))
-                )
+            # Global effect over all times and hidden dims
+            global_effects[idx] = float(np.sum(np.abs(x_true - m_smooth_a)))
 
         except Exception as e:
             print(f"[WARN run_seed={run_seed} t={int(t)}] {type(e).__name__}: {e}")
@@ -1002,49 +606,46 @@ def evaluate_attack_effects_single_run_multi_epsilon(
     return local_effects, global_effects
 
 
-def run_monte_carlo_attack_study_multi_epsilon(
+def run_monte_carlo_attack_study(
     *,
     N_runs: int = 20,
     T: int = 10,
-    epsilons: list[float] | np.ndarray = (0.5, 1.0, 2.0, 5.991, 9.21),
+    epsilon: float = 5.991,
     base_seed: int = 2026,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Returns
-    -------
-    t_values    : (T,) with t=1..T
-    local_cube  : (n_eps, N_runs, T)
-    global_cube : (n_eps, N_runs, T)
+    Returns:
+      t_values  : (10,) with t=1..10
+      local_mat : (N_runs, 10)
+      global_mat: (N_runs, 10)
     """
-    t_values = np.arange(1, T + 1, dtype=int)  # all attacked times: 1..T
-    epsilons = np.asarray(epsilons, dtype=float)
+    t_values = np.arange(1, T+1, dtype=int)  # do not attack t=0
 
-    n_eps = len(epsilons)
-    n_t = len(t_values)
+    if T < int(t_values[-1]):
+        raise ValueError(f"T={T} must be >= 10")
 
-    local_cube = np.full((n_eps, N_runs, n_t), np.nan, dtype=float)
-    global_cube = np.full((n_eps, N_runs, n_t), np.nan, dtype=float)
+    local_mat = np.full((N_runs, len(t_values)), np.nan, dtype=float)
+    global_mat = np.full((N_runs, len(t_values)), np.nan, dtype=float)
 
     for r in range(N_runs):
         run_seed = base_seed + 1000 * r
-        print(f"[MC multi-eps] run {r+1}/{N_runs} (seed={run_seed})")
+        print(f"[MC] run {r+1}/{N_runs} (seed={run_seed})")
 
-        local_eff, global_eff = evaluate_attack_effects_single_run_multi_epsilon(
+        local_eff, global_eff = evaluate_attack_effects_single_run(
             run_seed=run_seed,
             T=T,
             t_values=t_values,
-            epsilons=epsilons,
-            entry_variance=4.0,
+            epsilon=epsilon,
+            var_entries=8.0,
         )
+        local_mat[r] = local_eff
+        global_mat[r] = global_eff
 
-        local_cube[:, r, :] = local_eff
-        global_cube[:, r, :] = global_eff
-
-    return t_values, local_cube, global_cube
+    return t_values, local_mat, global_mat
 
 
 # ============================================================
-# Plot means only (multi-epsilon)
+# Plot (requested): two boxplots + means, PNG only
 # ============================================================
 def _set_plot_theme() -> None:
     plt.rcParams.update({
@@ -1072,87 +673,186 @@ def _style_axis(ax) -> None:
     ax.grid(True, alpha=0.20)
 
 
-def plot_attack_effect_means_multi_epsilon(
+def plot_attack_effect_boxplots(
     *,
     t_values: np.ndarray,
-    local_cube: np.ndarray,     # (n_eps, N_runs, n_t)
-    global_cube: np.ndarray,    # (n_eps, N_runs, n_t)
-    epsilons: list[float] | np.ndarray,
+    local_mat: np.ndarray,
+    global_mat: np.ndarray,
     outpath: str,
+    epsilon: float,
 ) -> None:
-    """
-    One figure, two panels:
-      - top: local means vs attacked time t
-      - bottom: global means vs attacked time t
-    Each epsilon is one dashed curve.
-    """
     _set_plot_theme()
-    epsilons = np.asarray(epsilons, dtype=float)
+
+    c_box_local = "#9CC2E5"
+    c_box_global = "#E7B4AE"
+    c_mean_local = "#2F6FA8"
+    c_mean_global = "#C85B4F"
+    c_median = "#2F2F2F"
+    c_whisk = "#777777"
 
     fig, axes = plt.subplots(
         2, 1,
         figsize=(15.5, 9.5),
         sharex=True,
-        constrained_layout=True,
+        constrained_layout=True
     )
 
     for ax in axes:
         _style_axis(ax)
 
-    # Mean across Monte Carlo runs
-    local_means = np.nanmean(local_cube, axis=1)    # (n_eps, n_t)
-    global_means = np.nanmean(global_cube, axis=1)  # (n_eps, n_t)
+        def _violin_with_mean(
+            ax,
+            data_mat: np.ndarray,
+            t_values: np.ndarray,
+            title: str,
+            ylabel: str,
+            violin_color: str,
+            mean_color: str,
+            show_outliers: bool = True,
+            adaptive_ylim: bool = True,
+        ):
+            # Datos por cada t (quitando NaNs)
+            data_by_t = [data_mat[:, i][~np.isnan(data_mat[:, i])] for i in range(data_mat.shape[1])]
 
-    # Top: local
-    for eidx, eps in enumerate(epsilons):
-        axes[0].plot(
-            t_values,
-            local_means[eidx],
-            linestyle="--",
-            marker="o",
-            linewidth=2.0,
-            markersize=5.0,
-            label=fr"$\epsilon={eps:g}$",
-        )
+            # Violin
+            parts = ax.violinplot(
+                data_by_t,
+                positions=t_values,
+                widths=0.75,
+                showmeans=False,
+                showmedians=True,
+                showextrema=True,
+            )
 
-    axes[0].set_title(
-        "(A) Media Monte Carlo del efecto local según el instante atacado",
-        loc="left",
-        fontweight="semibold",
-    )
-    axes[0].set_ylabel(
-        r"$\mathbb{E}\!\left[\sum_j |x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}|\right]$"
-    )
-    axes[0].legend(loc="best", frameon=True, framealpha=0.95)
+            # Estilo violines
+            for body in parts["bodies"]:
+                body.set_facecolor(violin_color)
+                body.set_edgecolor("#555555")
+                body.set_alpha(0.65)
+                body.set_linewidth(1.0)
 
-    # Bottom: global
-    for eidx, eps in enumerate(epsilons):
-        axes[1].plot(
-            t_values,
-            global_means[eidx],
-            linestyle="--",
-            marker="o",
-            linewidth=2.0,
-            markersize=5.0,
-            label=fr"$\epsilon={eps:g}$",
-        )
+            if "cmedians" in parts:
+                parts["cmedians"].set_color("#2F2F2F")
+                parts["cmedians"].set_linewidth(1.6)
 
-    axes[1].set_title(
-        "(B) Media Monte Carlo del efecto global según el instante atacado",
-        loc="left",
-        fontweight="semibold",
+            for k in ["cbars", "cmins", "cmaxes"]:
+                if k in parts:
+                    parts[k].set_color("#777777")
+                    parts[k].set_linewidth(1.0)
+
+            # Media
+            means = np.array([np.nanmean(data_mat[:, i]) for i in range(data_mat.shape[1])], dtype=float)
+            ax.plot(
+                t_values, means,
+                color=mean_color, marker="o", markersize=5.5, linewidth=2.1,
+                label="Media", zorder=4
+            )
+
+            # Outliers (regla IQR) superpuestos como puntos
+            all_vals_for_ylim = []
+
+            if show_outliers:
+                rng = np.random.default_rng(12345)  # jitter reproducible
+                first_label_done = False
+
+                for xpos, vals in zip(t_values, data_by_t):
+                    if vals.size == 0:
+                        continue
+
+                    all_vals_for_ylim.extend(vals.tolist())
+
+                    # IQR rule
+                    q1 = np.percentile(vals, 25)
+                    q3 = np.percentile(vals, 75)
+                    iqr = q3 - q1
+                    low = q1 - 1.5 * iqr
+                    high = q3 + 1.5 * iqr
+
+                    mask_out = (vals < low) | (vals > high)
+                    out_vals = vals[mask_out]
+
+                    # opcional: mostrar también todos los puntos (muy útil)
+                    # jitter pequeño para no solaparse
+                    jitter = rng.uniform(-0.06, 0.06, size=vals.size)
+                    ax.scatter(
+                        np.full(vals.size, xpos) + jitter,
+                        vals,
+                        s=12,
+                        alpha=0.18,
+                        color="#333333",
+                        zorder=2,
+                        linewidths=0,
+                    )
+
+                    if out_vals.size > 0:
+                        jitter_out = rng.uniform(-0.05, 0.05, size=out_vals.size)
+                        ax.scatter(
+                            np.full(out_vals.size, xpos) + jitter_out,
+                            out_vals,
+                            s=26,
+                            alpha=0.95,
+                            color="#B71C1C",
+                            edgecolors="white",
+                            linewidths=0.35,
+                            zorder=5,
+                            label="Outliers (IQR)" if not first_label_done else None,
+                        )
+                        first_label_done = True
+            else:
+                # por si quieres adaptar ylim igualmente sin pintar outliers/puntos
+                finite_vals = data_mat[np.isfinite(data_mat)]
+                all_vals_for_ylim = finite_vals.tolist() if finite_vals.size else []
+
+            # Límites adaptativos del eje Y (con padding)
+            if adaptive_ylim and len(all_vals_for_ylim) > 0:
+                y_all = np.asarray(all_vals_for_ylim, dtype=float)
+                y_min = float(np.min(y_all))
+                y_max = float(np.max(y_all))
+
+                # padding razonable
+                span = max(y_max - y_min, 1e-8)
+                pad = 0.10 * span + 1e-6
+
+                # si todo casi constante, da un margen mínimo
+                if span < 1e-6:
+                    pad = 0.1 * max(abs(y_min), 1.0)
+
+                ax.set_ylim(y_min - pad, y_max + pad)
+
+            ax.set_title(title, loc="left", fontweight="semibold")
+            ax.set_ylabel(ylabel)
+            ax.legend(loc="upper right", frameon=True, framealpha=0.95)
+    
+    _violin_with_mean(
+        axes[0],
+        local_mat,
+        t_values=t_values,
+        title="(A) Efecto local del ataque en el estado oculto (en el instante atacado t)",
+        ylabel=r"$\sum_j |x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}|$",
+        violin_color=c_box_local,
+        mean_color=c_mean_local,
+        show_outliers=False,
+        adaptive_ylim=True,
     )
-    axes[1].set_ylabel(
-        r"$\mathbb{E}\!\left[\sum_{k=0}^{T}\sum_j |x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}|\right]$"
+
+    _violin_with_mean(
+        axes[1],
+        global_mat,
+        t_values=t_values,
+        title="(B) Efecto global del ataque sobre toda la trayectoria oculta",
+        ylabel=r"$\sum_{k=0}^{T}\sum_j |x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}|$",
+        violin_color=c_box_global,
+        mean_color=c_mean_global,
+        show_outliers=False,
+        adaptive_ylim=True,
     )
+
     axes[1].set_xlabel("Instante atacado t")
-    axes[1].legend(loc="best", frameon=True, framealpha=0.95)
-
     axes[1].set_xticks(t_values)
-    axes[1].set_xlim(float(t_values[0]) - 0.4, float(t_values[-1]) + 0.4)
+    axes[1].set_xlim(float(t_values[0]) - 0.8, float(t_values[-1]) + 0.8)
 
     fig.suptitle(
-        f"Monte Carlo KKT attack study | medias por t | N_runs={local_cube.shape[1]} | multi-$\\epsilon$",
+        f"Monte Carlo KKT attack study | N_runs={local_mat.shape[0]} | ε={epsilon} | ataque en un solo t (t=1..10)",
         fontsize=13.5,
         fontweight="semibold",
         y=0.995,
@@ -1162,7 +862,7 @@ def plot_attack_effect_means_multi_epsilon(
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    fig.savefig(outpath, facecolor="white", dpi=300)
+    fig.savefig(outpath, facecolor="white", dpi=300)  # PNG only
     plt.close(fig)
 
 
@@ -1170,43 +870,36 @@ def plot_attack_effect_means_multi_epsilon(
 # MAIN
 # ============================================================
 def main() -> None:
-    N_runs = 500
-    T = 12
-    epsilons = [0.5, 1.0, 2.0, 5.991, 9.21, 12.0]
+    N_runs = 5000
+    T = 12            # attack t = 1..10 (t=0 is not attacked)
+    epsilon = 5.991   # chi-square ~95% in 2D
     base_seed = 2026
 
-    t_values, local_cube, global_cube = run_monte_carlo_attack_study_multi_epsilon(
+    t_values, local_mat, global_mat = run_monte_carlo_attack_study(
         N_runs=N_runs,
         T=T,
-        epsilons=epsilons,
+        epsilon=epsilon,
         base_seed=base_seed,
     )
 
-    # Optional terminal summary
-    local_means = np.nanmean(local_cube, axis=1)    # (n_eps, n_t)
-    global_means = np.nanmean(global_cube, axis=1)  # (n_eps, n_t)
-
-    print("\n=== Means across runs by epsilon and attacked t ===")
-    for eidx, eps in enumerate(epsilons):
-        print(f"\n--- epsilon = {eps} ---")
-        for t, lm, gm in zip(t_values, local_means[eidx], global_means[eidx]):
-            print(f"t={int(t):2d} | local_mean={lm:.6f} | global_mean={gm:.6f}")
+    # Optional summary in terminal
+    print("\n=== Means across runs by attacked t ===")
+    local_means = np.array([np.nanmean(local_mat[:, i]) for i in range(local_mat.shape[1])])
+    global_means = np.array([np.nanmean(global_mat[:, i]) for i in range(global_mat.shape[1])])
+    for t, lm, gm in zip(t_values, local_means, global_means):
+        print(f"t={int(t):2d} | local_mean={lm:.6f} | global_mean={gm:.6f}")
 
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
     os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(
-        out_dir,
-        f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}.png"
-    )
+    outpath = os.path.join(out_dir, f"mc_attack_effects_boxplots_N{N_runs}_T{T}.png")
 
-    plot_attack_effect_means_multi_epsilon(
+    plot_attack_effect_boxplots(
         t_values=t_values,
-        local_cube=local_cube,
-        global_cube=global_cube,
-        epsilons=epsilons,
+        local_mat=local_mat,
+        global_mat=global_mat,
         outpath=outpath,
+        epsilon=epsilon,
     )
-
     print(f"\nSaved PNG figure to: {outpath}")
 
 
