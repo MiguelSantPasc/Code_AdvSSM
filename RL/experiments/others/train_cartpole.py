@@ -46,7 +46,7 @@ def evaluate_returns(model, env, n_episodes=200, seed=123):
 def main():
     # Project structure
     experiments_dir = Path(__file__).resolve().parent
-    root_dir = experiments_dir.parent
+    root_dir = experiments_dir.parent.parent
     saved_models_dir = root_dir / "saved_models"
     results_dir = root_dir / "results"
     results_data_dir = results_dir / "cartpole_evaluation_data"

@@ -1,7 +1,8 @@
-# AdvRL_v2_SSM.py
+#!/usr/bin/env python3
+# AdvRL_v2.py
 # RL experiment: 2D point agent with WIND dynamics formalized as an SSM.
 #
-# Handwritten SSM-inspired model (augmented state):
+# SSM-inspired model (augmented state):
 #   x_t = [p_x, p_y, 1]^T in R^3
 #
 #   x_{t+1} = A_t x_t + B a_t_aug + w_t
@@ -16,21 +17,26 @@
 #          [0, 1, 0],
 #          [0, 0, 0]]
 #
-#   a_t_aug = [cos(theta_t), sin(theta_t), 0]^T
-#
-#   F   = [[1, 0, 0],
-#          [0, 1, 0]]
+# NEW ACTION (2D):
+#   a_t = [a_x, a_y] in [-1,1]^2
+#   a_t_aug = [a_x, a_y, 0]^T
+# -> Max step length is sqrt(2).
 #
 # RL observation returned to policy (4D):
-#   z_t = [ normalized(goal - y_t), wind_x_t, wind_y_t ]
+#   z_t = [ (goal - y_t)/goal_r_max, wind_x_t, wind_y_t ]
 #
-# Action:
-#   theta in [-pi, pi]
+# Rewards:
+#   -1 per step (until done)
+#   +40 on success
+#   -40 on timeout
+#
+# No noise (default here): obs_noise_std=0, proc_noise_std=0
 #
 # Saves model to: RL/saved_models/AdvRL_v2_policy.pt
 
 from __future__ import annotations
 
+import sys
 import os
 import math
 import random
@@ -44,6 +50,11 @@ import torch.optim as optim
 
 import matplotlib.pyplot as plt
 
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 
 # -----------------------------
 # Environment (SSM-style with Wind)
@@ -56,20 +67,25 @@ class AdvRLEnvConfig:
 
     # SSM noises
     obs_noise_std: float = 0.00   # sigma_v (measurement noise)
-    proc_noise_std: float = 0.00  # sigma_w (process noise on state transition)
+    proc_noise_std: float = 0.00  # sigma_w (process noise on transition)
 
-    max_steps: int = 25
-    goal_radius: float = 0.75
+    max_steps: int = 40
+    goal_radius: float = 1.0
     seed: int = 0
 
     # Wind parameters
-    wind_epsilon: float = 0.85      # epsilon in A_t
-    wind_volatility: float = 4.85   # random walk std for psi_t
+    wind_epsilon: float = 0.85       # epsilon in A_t
+    wind_volatility: float = 0.25    # random walk std for psi_t
+
+    # Rewards (sparse)
+    step_penalty: float = -1.0
+    success_reward: float = 40.0
+    timeout_penalty: float = -40.0
 
 
 class AdvRL2DEnv:
     """
-    SSM-based environment matching the handwritten augmented-state model.
+    SSM-based environment.
 
     Hidden augmented state:
         x_t = [p_x, p_y, 1]^T in R^3
@@ -82,19 +98,16 @@ class AdvRL2DEnv:
         B   = [[1, 0, 0],
                [0, 1, 0],
                [0, 0, 0]]
-        a_t_aug = [cos(theta_t), sin(theta_t), 0]^T
+        a_t_aug = [a_x, a_y, 0]^T   with a_x,a_y in [-1,1]
 
     Measurement:
         y_t = F x_t + v_t,   F = [[1,0,0],[0,1,0]]
 
-    RL observation (returned to policy):
-        z_t = [dir_x, dir_y, wind_x, wind_y] in R^4,
-        where [dir_x, dir_y] = normalized(goal - y_t)
-
-    Notes:
-      - self.x is kept as the true 2D position x_t[:2] for compatibility with plotting/training code.
-      - y_t is the noisy measured position.
+    RL observation:
+        z_t = [delta_x, delta_y, wind_x, wind_y] in R^4,
+        where delta = (goal - y_meas) / goal_r_max (normalized).
     """
+
     def __init__(self, cfg: AdvRLEnvConfig):
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
@@ -106,7 +119,7 @@ class AdvRL2DEnv:
             dtype=np.float32
         )
 
-        # Control matrix B (3x3), using augmented action a_t_aug in R^3
+        # Control matrix B (3x3)
         self.B = np.array(
             [[1.0, 0.0, 0.0],
              [0.0, 1.0, 0.0],
@@ -116,9 +129,11 @@ class AdvRL2DEnv:
 
         self.reset()
 
-    # -------------------------
-    # SSM helpers
-    # -------------------------
+    @staticmethod
+    def _wrap_angle_pi(x: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        return (x + math.pi) % (2.0 * math.pi) - math.pi
+
     def _A_t(self) -> np.ndarray:
         eps = float(self.cfg.wind_epsilon)
         c = math.cos(self.psi)
@@ -139,7 +154,8 @@ class AdvRL2DEnv:
 
     def _measure_position(self) -> np.ndarray:
         """
-        y_t = F x_t + v_t  in R^2
+        y_t = F x_t + v_t in R^2.
+        If obs_noise_std=0 -> noise-free.
         """
         y = (self.F @ self.x_ssm).astype(np.float32)
         if self.cfg.obs_noise_std > 0:
@@ -149,27 +165,24 @@ class AdvRL2DEnv:
 
     def _build_rl_obs(self) -> np.ndarray:
         """
-        RL obs z_t = [goal direction from measured position, current wind vector]
+        RL obs z_t = [delta_x, delta_y, wind_x, wind_y],
+        where delta = (goal - y_meas) / goal_r_max.
         """
-        y = self.y_meas  # measured/noisy position in R^2
-        delta_meas = (self.goal - y).astype(np.float32)
-        dist = float(np.linalg.norm(delta_meas)) + 1e-8
-        goal_dir = (delta_meas / dist).astype(np.float32)
+        y = self.y_meas
+        delta = (self.goal - y).astype(np.float32)
+
+        denom = float(self.cfg.goal_r_max) if self.cfg.goal_r_max > 0 else 1.0
+        delta = delta / denom  # IMPORTANT (you had this bugged before)
 
         wind_vec = self._wind_vec()
-        obs = np.concatenate([goal_dir, wind_vec]).astype(np.float32)
-        return obs
+        return np.concatenate([delta, wind_vec]).astype(np.float32)
 
-    # -------------------------
     # Gym-like API
-    # -------------------------
     def reset(self) -> np.ndarray:
         self.t = 0
 
         # Hidden augmented state x_0 = [0,0,1]
         self.x_ssm = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-
-        # True 2D position convenience handle
         self.x = self.x_ssm[:2].copy()
 
         # Sample random goal
@@ -179,6 +192,7 @@ class AdvRL2DEnv:
 
         # Initial wind direction psi_0
         self.psi = float(self.rng.uniform(-math.pi, math.pi))
+        self.psi = self._wrap_angle_pi(self.psi)
 
         # Initial measurement y_0
         self.y_meas = self._measure_position()
@@ -188,77 +202,81 @@ class AdvRL2DEnv:
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         self.t += 1
 
-        # RL action = angle theta
-        theta = float(action[0])
+        # Action = 2D step vector in [-1,1]^2
+        ax = float(action[0])
+        ay = float(action[1])
 
-        # Forced augmented action in R^3 (as in your notes)
-        a_aug = np.array([math.cos(theta), math.sin(theta), 0.0], dtype=np.float32)
+        # Safety clamp
+        ax = max(-1.0, min(1.0, ax))
+        ay = max(-1.0, min(1.0, ay))
+
+        # Augmented action in R^3
+        a_aug = np.array([ax, ay, 0.0], dtype=np.float32)
 
         # Transition matrix using current psi_t
         A_t = self._A_t()
-        wind_vec_this_step = self._wind_vec().copy()  # for logging/debugging this transition
+        wind_vec_this_step = self._wind_vec().copy()
 
-        # Process noise in R^3 (keep augmented coordinate exact)
+        # Process noise (R^3); keep augmented coordinate exact
         if self.cfg.proc_noise_std > 0:
             w = self.rng.normal(0.0, self.cfg.proc_noise_std, size=(3,)).astype(np.float32)
             w[2] = 0.0
         else:
             w = np.zeros(3, dtype=np.float32)
 
-        # SSM state update: x_{t+1} = A_t x_t + B a_t_aug + w_t
+        # SSM state update
         self.x_ssm = (A_t @ self.x_ssm + self.B @ a_aug + w).astype(np.float32)
-
-        # Numerical safety: keep augmented coordinate = 1
-        self.x_ssm[2] = 1.0
+        self.x_ssm[2] = 1.0  # keep augmented coordinate = 1
 
         # Update true 2D position
         self.x = self.x_ssm[:2].copy()
 
-        # Evolve wind direction for NEXT step (random walk)
+        # Evolve wind direction for NEXT step (random walk) + wrap
         self.psi += float(self.rng.normal(0.0, self.cfg.wind_volatility))
+        self.psi = self._wrap_angle_pi(self.psi)
 
-        # New noisy measurement y_{t+1}
+        # New measurement
         self.y_meas = self._measure_position()
 
-        # Reward based on TRUE position
+        # Termination based on TRUE position
         dist = float(np.linalg.norm(self.goal - self.x))
         done_success = dist <= self.cfg.goal_radius
         done_timeout = self.t >= self.cfg.max_steps
         done = bool(done_success or done_timeout)
 
+        # Reward
         if done_success:
-            reward = 25.0
+            reward = float(self.cfg.success_reward)
         elif done_timeout:
-            reward = -25.0
+            reward = float(self.cfg.timeout_penalty)
         else:
-            reward = -1.0
+            reward = float(self.cfg.step_penalty)
 
         info = {
             "t": self.t,
             "dist": dist,
             "success": bool(done_success),
+            "timeout": bool(done_timeout),
             "goal": self.goal.copy(),
-
-            # State / measurement
-            "x": self.x.copy(),               # true 2D position (kept for compatibility)
+            "x": self.x.copy(),
             "x_true": self.x.copy(),
-            "x_ssm": self.x_ssm.copy(),       # augmented hidden state
-            "y_meas": self.y_meas.copy(),     # noisy measured position
-
-            # Wind / SSM matrices
-            "wind_psi": float(self.psi),      # psi after update (next-step psi)
-            "wind_vec": wind_vec_this_step,   # wind applied this transition
+            "x_ssm": self.x_ssm.copy(),
+            "y_meas": self.y_meas.copy(),
+            "wind_psi": float(self.psi),
+            "wind_vec": wind_vec_this_step,
             "A_t": A_t.copy(),
             "B": self.B.copy(),
             "F": self.F.copy(),
+            "action_xy": np.array([ax, ay], dtype=np.float32),
+            "action_norm": float(math.hypot(ax, ay)),
         }
 
         obs = self._build_rl_obs()
-        return obs, float(reward), done, info
+        return obs, reward, done, info
 
 
 # -----------------------------
-# Squashed Gaussian policy
+# Squashed Gaussian policy (2D) with FIXED std
 # -----------------------------
 
 def atanh(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -267,57 +285,80 @@ def atanh(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, obs_dim: int = 4, hidden: int = 128):
+    """
+    2D squashed Gaussian policy:
+      y ~ Normal(mu, std_fixed)
+      a = tanh(y) in [-1,1]^2
+
+    std_fixed is constant and NOT learned.
+    """
+
+    def __init__(self, obs_dim: int = 4, hidden: int = 128, act_dim: int = 2, std_fixed: float = 0.35):
         super().__init__()
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        self.std_fixed = float(std_fixed)
+
         self.backbone = nn.Sequential(
             nn.Linear(obs_dim, hidden),
-            nn.Tanh(),
+            nn.SiLU(),
             nn.Linear(hidden, hidden),
-            nn.Tanh(),
+            nn.SiLU(),
         )
 
-        self.mu = nn.Linear(hidden, 1)
-        self.log_std = nn.Parameter(torch.tensor([-0.2], dtype=torch.float32))
+        self.mu = nn.Linear(hidden, act_dim)
         self.v = nn.Linear(hidden, 1)
 
     def forward(self, obs: torch.Tensor):
         h = self.backbone(obs)
-        mu = self.mu(h)
-        log_std = torch.clamp(self.log_std, min=-1.5, max=1.0)
-        std = torch.exp(log_std).unsqueeze(0).expand_as(mu)
-        v = self.v(h).squeeze(-1)
+        mu = self.mu(h)  # (B,2)
+        v = self.v(h).squeeze(-1)  # (B,)
+        std = torch.full_like(mu, self.std_fixed)  # (B,2)
         return mu, std, v
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor):
-        mu, std, v = self.forward(obs.unsqueeze(0))
+        """
+        obs: (obs_dim,)
+        returns:
+          action: np.array (2,) in [-1,1]
+          logp: float
+          v: float
+        """
+        mu, std, v = self.forward(obs.unsqueeze(0))  # (1,2), (1,2), (1,)
         dist = torch.distributions.Normal(mu, std)
-        y = dist.sample()
-        logp_y = dist.log_prob(y).sum(-1)
-        y0 = y[..., 0]
-        theta = math.pi * torch.tanh(y0)
-        log_det = torch.log(math.pi * (1 - torch.tanh(y0) ** 2) + 1e-8)
+
+        y = dist.sample()  # (1,2)
+        logp_y = dist.log_prob(y).sum(-1)  # (1,)
+
+        a = torch.tanh(y)  # (1,2)
+        log_det = torch.log(1 - a.pow(2) + 1e-8).sum(-1)  # (1,)
         logp = (logp_y - log_det).item()
-        action = torch.stack([theta], dim=-1).squeeze(0).cpu().numpy().astype(np.float32)
+
+        action = a.squeeze(0).cpu().numpy().astype(np.float32)  # (2,)
         return action, float(logp), float(v.item())
 
     @torch.no_grad()
     def mean_action(self, obs: torch.Tensor) -> torch.Tensor:
         mu, _, _ = self.forward(obs.unsqueeze(0))
-        y0 = mu[..., 0]
-        theta = math.pi * torch.tanh(y0)
-        return torch.stack([theta], dim=-1).squeeze(0)
+        return torch.tanh(mu).squeeze(0)  # (2,)
 
     def logp_and_value(self, obs: torch.Tensor, action: torch.Tensor):
+        """
+        obs: (B,4)
+        action: (B,2) in [-1,1]
+        """
         mu, std, v = self.forward(obs)
         dist = torch.distributions.Normal(mu, std)
-        theta = action[:, 0]
-        y0 = atanh(theta / math.pi)
-        y = torch.stack([y0], dim=-1)
+
+        a = action
+        y = atanh(a)  # inverse tanh
         logp_y = dist.log_prob(y).sum(-1)
-        log_det = torch.log(math.pi * (1 - torch.tanh(y0) ** 2) + 1e-8)
+        log_det = torch.log(1 - a.pow(2) + 1e-8).sum(-1)
         logp = logp_y - log_det
-        entropy = dist.entropy().sum(-1)
+
+        entropy = dist.entropy().sum(-1)  # base normal entropy (ok as bonus)
+
         return logp, v, entropy
 
 
@@ -327,19 +368,19 @@ class ActorCritic(nn.Module):
 
 @dataclass
 class PPOConfig:
-    total_steps: int = 300_000
+    total_steps: int = 250_000
     rollout_len: int = 2048
     gamma: float = 0.99
     lam: float = 0.95
     clip: float = 0.2
     lr: float = 3e-4
     vf_coef: float = 0.5
-    ent_coef: float = 0.03
+    ent_coef: float = 0.001
     train_epochs: int = 10
     minibatch_size: int = 256
     max_grad_norm: float = 0.5
     device: str = "cpu"
-    seed: int = 42
+    seed: int = 2026
     log_every: int = 20_000
 
 
@@ -370,7 +411,8 @@ def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) ->
     set_seed(ppo_cfg.seed)
     device = torch.device(ppo_cfg.device)
 
-    model = ActorCritic(obs_dim=4, hidden=128).to(device)
+    model = ActorCritic(obs_dim=4, hidden=128, act_dim=2, std_fixed=0.35).to(device)
+
     if model_path and os.path.exists(model_path):
         print(f"Loading existing model from {model_path}")
         try:
@@ -390,7 +432,7 @@ def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) ->
 
     while steps_done < ppo_cfg.total_steps:
         obs_buf = np.zeros((ppo_cfg.rollout_len, 4), dtype=np.float32)
-        act_buf = np.zeros((ppo_cfg.rollout_len, 1), dtype=np.float32)
+        act_buf = np.zeros((ppo_cfg.rollout_len, 2), dtype=np.float32)  # 2D action
         logp_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.float32)
         rew_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.float32)
         done_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.bool_)
@@ -399,6 +441,7 @@ def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) ->
         rollout_steps = 0
         for t in range(ppo_cfg.rollout_len):
             obs_buf[t] = obs_t.detach().cpu().numpy()
+
             action, logp, v = model.act(obs_t)
             val_buf[t] = v
 
@@ -447,15 +490,19 @@ def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) ->
             np.random.shuffle(idx)
             for start in range(0, len(idx), ppo_cfg.minibatch_size):
                 mb = idx[start:start + ppo_cfg.minibatch_size]
+
                 logp, v, ent = model.logp_and_value(obs_tensor[mb], act_tensor[mb])
                 ratio = torch.exp(logp - logp_old[mb])
+
                 surr1 = ratio * adv_tensor[mb]
                 surr2 = torch.clamp(ratio, 1 - ppo_cfg.clip, 1 + ppo_cfg.clip) * adv_tensor[mb]
+
                 loss = (
                     -torch.min(surr1, surr2).mean()
                     + ppo_cfg.vf_coef * 0.5 * (ret_tensor[mb] - v).pow(2).mean()
                     - ppo_cfg.ent_coef * ent.mean()
                 )
+
                 opt.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), ppo_cfg.max_grad_norm)
@@ -478,6 +525,7 @@ def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) ->
 def run_episode_collect(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu"):
     device_t = torch.device(device)
     obs = env.reset()
+
     traj = [env.x.copy()]
     obs_list = [obs.copy()]
     wind_list = []
@@ -485,20 +533,20 @@ def run_episode_collect(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu"
     success = False
 
     for _ in range(env.cfg.max_steps):
-        # Policy action from current RL observation
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device_t)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)  # (2,)
 
-        # Wind actually used on this step (before step updates psi)
-        current_wind = np.array([
-            env.cfg.wind_epsilon * math.cos(env.psi),
-            env.cfg.wind_epsilon * math.sin(env.psi)
-        ], dtype=np.float32)
+        current_wind = np.array(
+            [env.cfg.wind_epsilon * math.cos(env.psi),
+             env.cfg.wind_epsilon * math.sin(env.psi)],
+            dtype=np.float32
+        )
         wind_list.append(current_wind)
 
         obs, r, done, info = env.step(action)
         traj.append(env.x.copy())
         obs_list.append(obs.copy())
+
         if done:
             success = bool(info.get("success", False))
             break
@@ -513,14 +561,6 @@ def plot_trajectories_grid(
     device: str = "cpu",
     results_dir: str = "."
 ):
-    """
-    Grid plot of multiple trajectories.
-    Includes:
-      - wind arrows (skyblue)
-      - agent decision/policy arrows (blue)
-    """
-    device_t = torch.device(device)
-
     cols = int(math.ceil(math.sqrt(episodes)))
     rows = int(math.ceil(episodes / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
@@ -535,17 +575,16 @@ def plot_trajectories_grid(
         ax.scatter(traj[-1, 0], traj[-1, 1], marker="X", color="red")
         ax.scatter(goal[0], goal[1], marker="*", color="gold", s=100)
 
-        # Policy arrows from mean action, aligned with traj[:-1]
-        thetas = []
+        # Policy arrows: now directly action vectors
+        Ux, Uy = [], []
         for ob in obs_list[:-1]:
-            ob_t = torch.tensor(ob, dtype=torch.float32, device=device_t)
-            a_mean = model.mean_action(ob_t).cpu().numpy()
-            thetas.append(float(a_mean[0]))
-        thetas = np.array(thetas, dtype=np.float32)
+            ob_t = torch.tensor(ob, dtype=torch.float32)
+            a_mean = model.mean_action(ob_t).cpu().numpy()  # (2,)
+            Ux.append(float(a_mean[0]))
+            Uy.append(float(a_mean[1]))
+        Ux = np.array(Ux, dtype=np.float32)
+        Uy = np.array(Uy, dtype=np.float32)
 
-        Ux, Uy = np.cos(thetas), np.sin(thetas)
-
-        # Subsample arrows for clarity
         step = 2
         ax.quiver(
             traj[:-1:step, 0], traj[:-1:step, 1],
@@ -577,29 +616,27 @@ def plot_trajectories_grid(
 
 @torch.no_grad()
 def plot_policy_on_one_trajectory(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu", results_dir: str = "."):
-    device_t = torch.device(device)
     traj, obs_list, winds, goal, success = run_episode_collect(env, model, device=device)
 
-    thetas = []
+    # Policy vectors along trajectory
+    Ux, Uy = [], []
     for ob in obs_list[:-1]:
-        ob_t = torch.tensor(ob, dtype=torch.float32, device=device_t)
+        ob_t = torch.tensor(ob, dtype=torch.float32)
         a_mean = model.mean_action(ob_t).cpu().numpy()
-        thetas.append(float(a_mean[0]))
-
-    thetas = np.array(thetas, dtype=np.float32)
-    Ux, Uy = np.cos(thetas), np.sin(thetas)
+        Ux.append(float(a_mean[0]))
+        Uy.append(float(a_mean[1]))
+    Ux = np.array(Ux, dtype=np.float32)
+    Uy = np.array(Uy, dtype=np.float32)
 
     fig = plt.figure(figsize=(8, 8))
     plt.plot(traj[:, 0], traj[:, 1], marker="o", markersize=3, linewidth=1, label="trajectory", alpha=0.5)
 
-    # Policy arrows (agent intent)
     plt.quiver(
         traj[:-1, 0], traj[:-1, 1], Ux, Uy,
         angles="xy", scale_units="xy", scale=1.0, width=0.005,
-        color="blue", label="policy action"
+        color="blue", label="policy action (ax,ay)"
     )
 
-    # Wind arrows (external force)
     plt.quiver(
         traj[:-1, 0], traj[:-1, 1], winds[:, 0], winds[:, 1],
         angles="xy", scale_units="xy", scale=1.0, width=0.003,
@@ -625,32 +662,34 @@ def plot_policy_on_one_trajectory(env: AdvRL2DEnv, model: ActorCritic, device: s
 # -----------------------------
 
 def main():
-    # Example config consistent with your note:
-    # sigma_v^2 >> sigma_w^2 (measurement noise larger than process noise)
+    # No noise: deterministic measurement & transition
     env_cfg = AdvRLEnvConfig(
-        obs_noise_std=0.10,      # measurement noise sigma_v
-        proc_noise_std=0.01,     # process noise sigma_w (small)
-        wind_epsilon=0.25,
-        wind_volatility=0.05,
-        seed=2026
+        obs_noise_std=0.0,
+        proc_noise_std=0.0,
+        wind_epsilon=0.9,
+        wind_volatility=0.25,
+        seed=2025,
+        step_penalty=-1.0,
+        success_reward=25.0,
+        timeout_penalty=-25.0,
     )
     env = AdvRL2DEnv(env_cfg)
 
-    ppo_cfg = PPOConfig(
-        total_steps=100_000,
-        device="cpu",  # change to "cuda" if available
-        seed=2026
+    ppo_cfg = PPOConfig(    
+        total_steps=1_000_000,
+        device="cpu",
+        seed=2026,
     )
 
-    save_dir = "RL/saved_models"
+    save_dir = os.path.join(_PROJECT_ROOT, "RL", "saved_models")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, "AdvRL_v2_policy.pt")
 
-    print("Starting training of AdvRL_v2 (SSM wind version)...")
+    print("Starting training of AdvRL_v2 (SSM wind, 2D action, fixed std, sparse reward, no noise)...")
     model = train(env, ppo_cfg, model_path=save_path)
     torch.save(model.state_dict(), save_path)
 
-    results_dir = "RL/results"
+    results_dir = os.path.join(_PROJECT_ROOT, "RL", "results")
     os.makedirs(results_dir, exist_ok=True)
     print("Generating plots...")
     plot_trajectories_grid(env, model, episodes=12, device=ppo_cfg.device, results_dir=results_dir)
