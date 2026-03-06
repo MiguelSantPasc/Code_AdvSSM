@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# AdvRL_v2.py
+# AdvRL_wind.py
 # RL experiment: 2D point agent with WIND dynamics formalized as an SSM.
 #
 # SSM-inspired model (augmented state):
@@ -70,7 +70,7 @@ class AdvRLEnvConfig:
     proc_noise_std: float = 0.00  # sigma_w (process noise on transition)
 
     max_steps: int = 40
-    goal_radius: float = 1.0
+    goal_radius: float = 0.35
     seed: int = 0
 
     # Wind parameters
@@ -79,7 +79,7 @@ class AdvRLEnvConfig:
 
     # Rewards (sparse)
     step_penalty: float = -1.0
-    success_reward: float = 40.0
+    success_reward: float = 5.0
     timeout_penalty: float = -40.0
 
 
@@ -670,8 +670,8 @@ def main():
         wind_volatility=0.25,
         seed=2025,
         step_penalty=-1.0,
-        success_reward=25.0,
-        timeout_penalty=-25.0,
+        success_reward=5.0,
+        timeout_penalty=-5.0,
     )
     env = AdvRL2DEnv(env_cfg)
 
