@@ -20,7 +20,7 @@ CMAP = "viridis"
 
 # --- Viento fijo
 WIND_EPS = 0.9
-WIND_PSI = 2.5  # rad (0 => viento +x)
+WIND_PSI = 1.5  # rad (0 => viento +x)
 WIND_X = WIND_EPS * math.cos(WIND_PSI)
 WIND_Y = WIND_EPS * math.sin(WIND_PSI)
 

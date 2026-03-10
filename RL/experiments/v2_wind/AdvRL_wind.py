@@ -670,13 +670,13 @@ def main():
         wind_volatility=0.25,
         seed=2025,
         step_penalty=-1.0,
-        success_reward=5.0,
+        success_reward=3.0,
         timeout_penalty=-5.0,
     )
     env = AdvRL2DEnv(env_cfg)
 
     ppo_cfg = PPOConfig(    
-        total_steps=1_000_000,
+        total_steps=500_000,
         device="cpu",
         seed=2026,
     )

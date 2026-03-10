@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 DEVICE = "cpu"
 
 # Single episode seed to plot
-PLOT_SEED = 202
+PLOT_SEED = 22
 
 # Random-noise case
 NOISE_STD = 0.5

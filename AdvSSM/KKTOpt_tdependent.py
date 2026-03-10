@@ -647,31 +647,165 @@ def run_monte_carlo_attack_study(
 # ============================================================
 # Plot (requested): two boxplots + means, PNG only
 # ============================================================
+# ============================================================
+# Plot (more professional styling)
+# ============================================================
 def _set_plot_theme() -> None:
     plt.rcParams.update({
         "figure.dpi": 150,
         "savefig.dpi": 300,
-        "font.size": 10.5,
-        "axes.titlesize": 12.5,
-        "axes.labelsize": 11,
+        "font.size": 11,
+        "font.family": "DejaVu Sans",
+        "axes.titlesize": 13,
+        "axes.titleweight": "semibold",
+        "axes.labelsize": 11.5,
         "legend.fontsize": 9.5,
-        "xtick.labelsize": 9.5,
-        "ytick.labelsize": 9.5,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
         "axes.linewidth": 0.9,
         "axes.grid": True,
-        "grid.alpha": 0.20,
+        "grid.alpha": 0.16,
         "grid.linewidth": 0.7,
+        "grid.linestyle": "-",
+        "lines.linewidth": 2.0,
+        "lines.markersize": 5.5,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
     })
 
 
 def _style_axis(ax) -> None:
-    ax.set_facecolor("#FBFBFD")
+    ax.set_facecolor("#FCFCFD")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_alpha(0.55)
-    ax.spines["bottom"].set_alpha(0.55)
-    ax.grid(True, alpha=0.20)
+    ax.spines["left"].set_alpha(0.35)
+    ax.spines["bottom"].set_alpha(0.35)
+    ax.grid(True, axis="y", alpha=0.18)
+    ax.grid(False, axis="x")
+    ax.set_axisbelow(True)
 
+def _violin_with_mean(
+    ax,
+    data_mat: np.ndarray,
+    t_values: np.ndarray,
+    title: str,
+    ylabel: str,
+    violin_color: str,
+    mean_color: str,
+    adaptive_ylim: bool = True,
+) -> None:
+    data_by_t = [data_mat[:, i][~np.isnan(data_mat[:, i])] for i in range(data_mat.shape[1])]
+
+    # Violin plot
+    parts = ax.violinplot(
+        data_by_t,
+        positions=t_values,
+        widths=0.72,
+        showmeans=False,
+        showmedians=False,
+        showextrema=False,
+    )
+
+    for body in parts["bodies"]:
+        body.set_facecolor(violin_color)
+        body.set_edgecolor(violin_color)
+        body.set_alpha(0.45)
+        body.set_linewidth(1.0)
+
+    # Only mean
+    means = np.array([
+        np.nanmean(data_mat[:, i]) if np.any(np.isfinite(data_mat[:, i])) else np.nan
+        for i in range(data_mat.shape[1])
+    ])
+
+    ax.plot(
+        t_values,
+        means,
+        color=mean_color,
+        marker="o",
+        markersize=5.5,
+        linewidth=2.3,
+        zorder=4,
+        label="Mean",
+    )
+
+    if adaptive_ylim:
+        finite_means = means[np.isfinite(means)]
+        if finite_means.size > 0:
+            y_min = float(np.min(finite_means))
+            y_max = float(np.max(finite_means))
+            span = max(y_max - y_min, 1e-8)
+            pad = 0.15 * span
+
+            if span < 1e-6:
+                pad = 0.1 * max(abs(y_min), 1.0)
+
+            ax.set_ylim(y_min - pad, y_max + pad)
+
+    ax.set_title(title, loc="left", pad=10)
+    ax.set_ylabel(ylabel)
+    ax.legend(
+        loc="upper right",
+        frameon=True,
+        fancybox=True,
+        framealpha=0.95,
+        edgecolor="#DDDDDD",
+    )
+
+
+def _mean_line_plot(
+    ax,
+    data_mat: np.ndarray,
+    t_values: np.ndarray,
+    title: str,
+    ylabel: str,
+    mean_color: str,
+    adaptive_ylim: bool = True,
+) -> None:
+    means = np.array([
+        np.nanmean(data_mat[:, i]) if np.any(np.isfinite(data_mat[:, i])) else np.nan
+        for i in range(data_mat.shape[1])
+    ], dtype=float)
+
+
+
+    # Línea de la media
+    ax.plot(
+        t_values,
+        means,
+        color=mean_color,
+        marker="o",
+        markersize=6,
+        linewidth=2.4,
+        zorder=3,
+        label="Mean",
+    )
+
+    if adaptive_ylim:
+        finite_lower = means[np.isfinite(means)]
+        finite_upper = means[np.isfinite(means)]
+
+        if finite_lower.size > 0 and finite_upper.size > 0:
+            y_min = float(np.min(finite_lower))
+            y_max = float(np.max(finite_upper))
+            span = max(y_max - y_min, 1e-8)
+            pad = 0.12 * span
+
+            if span < 1e-6:
+                pad = 0.1 * max(abs(y_min), abs(y_max), 1.0)
+
+            ax.set_ylim(y_min - pad, y_max + pad)
+
+    ax.set_title(title, loc="left", pad=10)
+    ax.set_ylabel(ylabel)
+    ax.legend(
+        loc="upper right",
+        frameon=True,
+        fancybox=True,
+        framealpha=0.95,
+        edgecolor="#DDDDDD",
+    )
 
 def plot_attack_effect_boxplots(
     *,
@@ -683,225 +817,150 @@ def plot_attack_effect_boxplots(
 ) -> None:
     _set_plot_theme()
 
-    c_box_local = "#9CC2E5"
-    c_box_global = "#E7B4AE"
-    c_mean_local = "#2F6FA8"
-    c_mean_global = "#C85B4F"
-    c_median = "#2F2F2F"
-    c_whisk = "#777777"
+    soft_colors = [
+        "#7C8DA6",  # muted blue-gray
+        "#9A8C98",  # mauve gray
+        "#8FAE9D",  # muted green
+        "#B39B7D",  # muted sand
+        "#8C7C74",  # warm gray-brown
+        "#6F8F8D",  # desaturated teal
+    ]
+
+    c_local_fill = soft_colors[0]
+    c_local_line = "#5E738F"
+
+    c_global_fill = soft_colors[2]
+    c_global_line = "#6E9181"
+
+    c_median = "#5A5A5A"
+    title_color = "#2E3440"
 
     fig, axes = plt.subplots(
         2, 1,
-        figsize=(15.5, 9.5),
+        figsize=(15.5, 9.4),
         sharex=True,
-        constrained_layout=True
+        constrained_layout=True,
     )
 
     for ax in axes:
         _style_axis(ax)
-
-        def _violin_with_mean(
-            ax,
-            data_mat: np.ndarray,
-            t_values: np.ndarray,
-            title: str,
-            ylabel: str,
-            violin_color: str,
-            mean_color: str,
-            show_outliers: bool = True,
-            adaptive_ylim: bool = True,
-        ):
-            # Datos por cada t (quitando NaNs)
-            data_by_t = [data_mat[:, i][~np.isnan(data_mat[:, i])] for i in range(data_mat.shape[1])]
-
-            # Violin
-            parts = ax.violinplot(
-                data_by_t,
-                positions=t_values,
-                widths=0.75,
-                showmeans=False,
-                showmedians=True,
-                showextrema=True,
-            )
-
-            # Estilo violines
-            for body in parts["bodies"]:
-                body.set_facecolor(violin_color)
-                body.set_edgecolor("#555555")
-                body.set_alpha(0.65)
-                body.set_linewidth(1.0)
-
-            if "cmedians" in parts:
-                parts["cmedians"].set_color("#2F2F2F")
-                parts["cmedians"].set_linewidth(1.6)
-
-            for k in ["cbars", "cmins", "cmaxes"]:
-                if k in parts:
-                    parts[k].set_color("#777777")
-                    parts[k].set_linewidth(1.0)
-
-            # Media
-            means = np.array([np.nanmean(data_mat[:, i]) for i in range(data_mat.shape[1])], dtype=float)
-            ax.plot(
-                t_values, means,
-                color=mean_color, marker="o", markersize=5.5, linewidth=2.1,
-                label="Media", zorder=4
-            )
-
-            # Outliers (regla IQR) superpuestos como puntos
-            all_vals_for_ylim = []
-
-            if show_outliers:
-                rng = np.random.default_rng(12345)  # jitter reproducible
-                first_label_done = False
-
-                for xpos, vals in zip(t_values, data_by_t):
-                    if vals.size == 0:
-                        continue
-
-                    all_vals_for_ylim.extend(vals.tolist())
-
-                    # IQR rule
-                    q1 = np.percentile(vals, 25)
-                    q3 = np.percentile(vals, 75)
-                    iqr = q3 - q1
-                    low = q1 - 1.5 * iqr
-                    high = q3 + 1.5 * iqr
-
-                    mask_out = (vals < low) | (vals > high)
-                    out_vals = vals[mask_out]
-
-                    # opcional: mostrar también todos los puntos (muy útil)
-                    # jitter pequeño para no solaparse
-                    jitter = rng.uniform(-0.06, 0.06, size=vals.size)
-                    ax.scatter(
-                        np.full(vals.size, xpos) + jitter,
-                        vals,
-                        s=12,
-                        alpha=0.18,
-                        color="#333333",
-                        zorder=2,
-                        linewidths=0,
-                    )
-
-                    if out_vals.size > 0:
-                        jitter_out = rng.uniform(-0.05, 0.05, size=out_vals.size)
-                        ax.scatter(
-                            np.full(out_vals.size, xpos) + jitter_out,
-                            out_vals,
-                            s=26,
-                            alpha=0.95,
-                            color="#B71C1C",
-                            edgecolors="white",
-                            linewidths=0.35,
-                            zorder=5,
-                            label="Outliers (IQR)" if not first_label_done else None,
-                        )
-                        first_label_done = True
-            else:
-                # por si quieres adaptar ylim igualmente sin pintar outliers/puntos
-                finite_vals = data_mat[np.isfinite(data_mat)]
-                all_vals_for_ylim = finite_vals.tolist() if finite_vals.size else []
-
-            # Límites adaptativos del eje Y (con padding)
-            if adaptive_ylim and len(all_vals_for_ylim) > 0:
-                y_all = np.asarray(all_vals_for_ylim, dtype=float)
-                y_min = float(np.min(y_all))
-                y_max = float(np.max(y_all))
-
-                # padding razonable
-                span = max(y_max - y_min, 1e-8)
-                pad = 0.10 * span + 1e-6
-
-                # si todo casi constante, da un margen mínimo
-                if span < 1e-6:
-                    pad = 0.1 * max(abs(y_min), 1.0)
-
-                ax.set_ylim(y_min - pad, y_max + pad)
-
-            ax.set_title(title, loc="left", fontweight="semibold")
-            ax.set_ylabel(ylabel)
-            ax.legend(loc="upper right", frameon=True, framealpha=0.95)
     
-    _violin_with_mean(
+    _mean_line_plot(
         axes[0],
         local_mat,
         t_values=t_values,
-        title="(A) Efecto local del ataque en el estado oculto (en el instante atacado t)",
-        ylabel=r"$\sum_j |x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}|$",
-        violin_color=c_box_local,
-        mean_color=c_mean_local,
-        show_outliers=False,
+        title="(A) Local effect of the attack on the hidden state at the attacked time",
+        ylabel=r"$\sum_j \left|x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}\right|$",
+        mean_color=c_local_line,
         adaptive_ylim=True,
     )
 
-    _violin_with_mean(
+    _mean_line_plot(
         axes[1],
         global_mat,
         t_values=t_values,
-        title="(B) Efecto global del ataque sobre toda la trayectoria oculta",
-        ylabel=r"$\sum_{k=0}^{T}\sum_j |x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}|$",
-        violin_color=c_box_global,
-        mean_color=c_mean_global,
-        show_outliers=False,
+        title="(B) Global effect of the attack over the full hidden trajectory",
+        ylabel=r"$\sum_{k=0}^{T}\sum_j \left|x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}\right|$",
+        mean_color=c_global_line,
         adaptive_ylim=True,
     )
 
-    axes[1].set_xlabel("Instante atacado t")
+
+    axes[1].set_xlabel("Attacked time step $t$")
     axes[1].set_xticks(t_values)
-    axes[1].set_xlim(float(t_values[0]) - 0.8, float(t_values[-1]) + 0.8)
+    axes[1].set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
 
     fig.suptitle(
-        f"Monte Carlo KKT attack study | N_runs={local_mat.shape[0]} | ε={epsilon} | ataque en un solo t (t=1..10)",
-        fontsize=13.5,
+        f"Monte Carlo study of KKT attacks in a 2D LGSSM  |  "
+        f"$N_{{runs}}={local_mat.shape[0]}$,  $\\varepsilon={epsilon}$",
+        fontsize=14,
         fontweight="semibold",
-        y=0.995,
+        color=title_color,
+        y=1.01,
+    )
+
+    # Subtítulo visual suave
+    axes[0].text(
+        0.0, 1.06,
+        "Attack applied at exactly one observation time, with smoothing-based impact evaluation",
+        transform=axes[0].transAxes,
+        fontsize=10,
+        color="#6A6A6A",
+        ha="left",
+        va="bottom",
     )
 
     out_dir = os.path.dirname(outpath)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    fig.savefig(outpath, facecolor="white", dpi=300)  # PNG only
+    fig.savefig(outpath, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
-
 
 # ============================================================
 # MAIN
 # ============================================================
 def main() -> None:
     N_runs = 5000
-    T = 12            # attack t = 1..10 (t=0 is not attacked)
-    epsilon = 5.991   # chi-square ~95% in 2D
-    base_seed = 2026
+    T = 8
+    epsilon = 5.991
+    base_seed = 2022
+    force_recompute = False
 
-    t_values, local_mat, global_mat = run_monte_carlo_attack_study(
-        N_runs=N_runs,
-        T=T,
-        epsilon=epsilon,
-        base_seed=base_seed,
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    os.makedirs(out_dir, exist_ok=True)
+
+    cache_path = os.path.join(
+        out_dir,
+        f"mc_attack_effects_data_N{N_runs}_T{T}_eps{epsilon:.3f}_seed{base_seed}.npz"
+    )
+    fig_path = os.path.join(
+        out_dir,
+        f"mc_attack_effects_boxplots_N{N_runs}_T{T}_eps{epsilon:.3f}.png"
     )
 
-    # Optional summary in terminal
+    if os.path.exists(cache_path) and not force_recompute:
+        print(f"[INFO] Cache found. Loading results from: {cache_path}")
+        data = np.load(cache_path)
+        t_values = data["t_values"]
+        local_mat = data["local_mat"]
+        global_mat = data["global_mat"]
+    else:
+        print("[INFO] Running Monte Carlo study...")
+        t_values, local_mat, global_mat = run_monte_carlo_attack_study(
+            N_runs=N_runs,
+            T=T,
+            epsilon=epsilon,
+            base_seed=base_seed,
+        )
+
+        np.savez_compressed(
+            cache_path,
+            t_values=t_values,
+            local_mat=local_mat,
+            global_mat=global_mat,
+            N_runs=N_runs,
+            T=T,
+            epsilon=epsilon,
+            base_seed=base_seed,
+        )
+        print(f"[INFO] Saved cache to: {cache_path}")
+
     print("\n=== Means across runs by attacked t ===")
     local_means = np.array([np.nanmean(local_mat[:, i]) for i in range(local_mat.shape[1])])
     global_means = np.array([np.nanmean(global_mat[:, i]) for i in range(global_mat.shape[1])])
     for t, lm, gm in zip(t_values, local_means, global_means):
         print(f"t={int(t):2d} | local_mean={lm:.6f} | global_mean={gm:.6f}")
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(out_dir, f"mc_attack_effects_boxplots_N{N_runs}_T{T}.png")
-
     plot_attack_effect_boxplots(
         t_values=t_values,
         local_mat=local_mat,
         global_mat=global_mat,
-        outpath=outpath,
+        outpath=fig_path,
         epsilon=epsilon,
     )
-    print(f"\nSaved PNG figure to: {outpath}")
 
+    print(f"\nSaved PNG figure to: {fig_path}")
 
 if __name__ == "__main__":
     main()
