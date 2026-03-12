@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+from matplotlib.patches import FancyArrowPatch
 import os
 import sys
 from dataclasses import asdict
@@ -688,7 +689,6 @@ def collect_attack_kf_rollout(
         "label": f"attack + KF (p={attack_prob})",
     }
 
-
 # ============================================================
 # Plot
 # ============================================================
@@ -700,7 +700,9 @@ def plot_three_rollouts_same_axes(
     goal_radius: float,
     arrow_every: int = 2,
 ):
-    fig, axes = plt.subplots(1, 4, figsize=(28, 7), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.subplots_adjust(wspace=0.08, hspace=-0.02)
+    axes = axes.ravel()
 
     datasets = [clean_data, noisy_kf_data, attack_kf_data]
     panel_titles = [
@@ -737,7 +739,7 @@ def plot_three_rollouts_same_axes(
         elif label == "noisy + KF":
             return "tab:orange"
         else:
-            return "tab:red"
+            return "tab:green"
 
     # --------------------------------------------------------
     # Small helper to draw one dataset on one axis
@@ -752,17 +754,17 @@ def plot_three_rollouts_same_axes(
         goal = d["goal"]
         start = true_pos[0]
 
-        ax.plot(
+        h_true, = ax.plot(
             true_pos[:, 0], true_pos[:, 1],
-            linewidth=2.4,
+            linewidth=1.4,
             alpha=TRUE_ALPHA,
             color=c,
             label=f"{label} true path",
         )
 
-        ax.plot(
+        h_seen, = ax.plot(
             seen_pos[:, 0], seen_pos[:, 1],
-            linewidth=2.1,
+            linewidth=1.1,
             linestyle="--",
             alpha=OBS_ALPHA,
             color=c,
@@ -777,19 +779,19 @@ def plot_three_rollouts_same_axes(
             actions[idx, 1],
             angles="xy",
             scale_units="xy",
-            scale=1.0,
-            width=0.004,
+            scale=2.0,
+            width=0.002,
             alpha=0.80,
             color=c,
         )
 
-        ax.scatter(
+        h_start = ax.scatter(
             start[0], start[1],
             s=85, marker="o", color="black",
             edgecolors="white", linewidths=1.2, label="start"
         )
 
-        ax.scatter(
+        h_goal = ax.scatter(
             goal[0], goal[1],
             s=220, marker="*", color="gold",
             edgecolors="black", linewidths=1.0, label="goal"
@@ -806,7 +808,7 @@ def plot_three_rollouts_same_axes(
         )
         ax.add_patch(circ)
 
-        ax.scatter(
+        h_end = ax.scatter(
             true_pos[-1, 0], true_pos[-1, 1],
             s=75, marker="X", color=c,
             edgecolors="white", linewidths=1.0, label="end"
@@ -820,8 +822,28 @@ def plot_three_rollouts_same_axes(
         ax.set_ylabel("y")
 
         if show_legend:
-            ax.legend(fontsize=8, frameon=True, loc="best")
+            wind_proxy = FancyArrowPatch(
+                (0, 0), (1, 0),
+                arrowstyle="->",
+                mutation_scale=14,
+                color=c,
+                linewidth=1.5
+            )
 
+            ax.legend(
+                handles=[h_true, h_seen, wind_proxy, h_start, h_goal, h_end],
+                labels=[
+                    f"{label} true path",
+                    f"{label} seen state",
+                    "wind",
+                    "start",
+                    "goal",
+                    "end",
+                ],
+                fontsize=8,
+                frameon=True,
+                loc="best",
+            )
     # --------------------------------------------------------
     # Panel 1: all together
     # --------------------------------------------------------
@@ -837,7 +859,7 @@ def plot_three_rollouts_same_axes(
 
         ax.plot(
             true_pos[:, 0], true_pos[:, 1],
-            linewidth=2.2,
+            linewidth=1.2,
             alpha=TRUE_ALPHA,
             color=c,
             label=f"{label} true path",
@@ -845,25 +867,11 @@ def plot_three_rollouts_same_axes(
 
         ax.plot(
             seen_pos[:, 0], seen_pos[:, 1],
-            linewidth=2.0,
+            linewidth=1.2,
             linestyle="--",
             alpha=OBS_ALPHA,
             color=c,
             label=f"{label} seen state",
-        )
-
-        idx = np.arange(0, len(actions), max(1, arrow_every))
-        ax.quiver(
-            seen_pos[idx, 0],
-            seen_pos[idx, 1],
-            actions[idx, 0],
-            actions[idx, 1],
-            angles="xy",
-            scale_units="xy",
-            scale=1.0,
-            width=0.0038,
-            alpha=0.75,
-            color=c,
         )
 
         ax.scatter(
@@ -885,7 +893,7 @@ def plot_three_rollouts_same_axes(
         goal_radius,
         fill=False,
         linestyle=":",
-        linewidth=1.8,
+        linewidth=0.8,
         alpha=0.8,
         color="black",
     )
@@ -918,12 +926,7 @@ def plot_three_rollouts_same_axes(
     draw_single_dataset(axes[3], attack_kf_data, show_legend=True)
     axes[3].set_title(panel_titles[3])
 
-    fig.suptitle(
-        f"Trajectories on the same episode (seed={PLOT_SEED}, attack p={ATTACK_PROB})\n"
-        f"solid = true path | dashed = state seen by agent | arrows = actions",
-        fontsize=14,
-    )
-
+    
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
     fig.savefig(outpath, dpi=220, bbox_inches="tight", pad_inches=0.3)
     plt.close(fig)

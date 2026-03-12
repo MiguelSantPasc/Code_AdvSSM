@@ -51,11 +51,11 @@ DEVICE = "cpu"
 NOISE_STD = 0.5
 
 # Adversarial attack geometry
-ATTACK_PROB = 0.25
+ATTACK_PROB = 0.15
 ATTACK_STD = NOISE_STD
 ATTACK_EPS = 5.991   # ~ chi-square 95% in 2D
 
-# KF model
+# KF modelt
 KF_MEAS_STD = NOISE_STD
 KF_PROC_STD = 0.00003
 
@@ -65,7 +65,7 @@ PGD_STEP_SIZE = 0.25
 MC_SAMPLES = 256
 
 # Accumulated reward plot
-N_EPISODES = 500
+N_EPISODES = 2000
 SEED0 = 1_000
 
 # ------------------------------------------------------------

@@ -734,7 +734,7 @@ def plot_attack_figure_four_panels(
         ax.set_ylabel(f"x[{idx}]")
         ax.margins(x=0.02)
         ax.legend(
-            loc="upper right",
+            loc="upper left",
             frameon=True,
             framealpha=0.94,
             ncol=2,
@@ -785,7 +785,7 @@ def plot_attack_figure_four_panels(
     ax_geom.set_xlabel("y[0]")
     ax_geom.set_ylabel("y[1]")
     ax_geom.set_aspect("equal", adjustable="box")
-    ax_geom.legend(loc="upper right", frameon=True, framealpha=0.94)
+    ax_geom.legend(loc="upper left", frameon=True, framealpha=0.94)
 
     # add inset-like text with final objective
     if obj_hist.size > 0:
@@ -839,7 +839,7 @@ def plot_attack_figure_four_panels(
     ax_traj.set_xlabel("x1 (component 0)")
     ax_traj.set_ylabel("x2 (component 1)")
     ax_traj.set_aspect("equal", adjustable="box")
-    ax_traj.legend(loc="upper right", frameon=True, framealpha=0.94)
+    ax_traj.legend(loc="lower right", frameon=True, framealpha=0.94)
 
     fig.suptitle(
         f"White-box point attack on E[g(x_t) | y_t', y_-t] at t={t} | ε={epsilon:.3f}",
@@ -862,7 +862,7 @@ def estimate_E_g(
     m: np.ndarray,          # (n_x,)
     P: np.ndarray,          # (n_x,n_x)
     g,
-    n_mc: int = 2000,
+    n_mc: int = 500,
     seed: int = 0,
 ) -> tuple[np.ndarray, float]:
     """
@@ -891,260 +891,260 @@ def estimate_E_g(
     return mu_g, float(g_at_mean[0]) if g_at_mean.size == 1 else g_at_mean
 
 
-# ============================================================
-# MAIN
-# ============================================================
-def main() -> None:
-    # --------------------------------------------------------
-    # Setup
-    # --------------------------------------------------------
-    n_x = n_y = n_u = 2
-    T = 12
-    seed = 2025
+    # ============================================================
+    # MAIN
+    # ============================================================
+    def main() -> None:
+        # --------------------------------------------------------
+        # Setup
+        # --------------------------------------------------------
+        n_x = n_y = n_u = 2
+        T = 12
+        seed = 2026
 
-    # --------------------------------------------------------
-    # Latent state:
-    # x[0] = degradation / severity level
-    # x[1] = deterioration rate / worsening trend
-    #
-    # Inputs:
-    # u[0] = maintenance intensity  (positive = more maintenance)
-    # u[1] = operational load       (positive = more stress/load)
-    # --------------------------------------------------------
+        # --------------------------------------------------------
+        # Latent state:
+        # x[0] = degradation / severity level
+        # x[1] = deterioration rate / worsening trend
+        #
+        # Inputs:
+        # u[0] = maintenance intensity  (positive = more maintenance)
+        # u[1] = operational load       (positive = more stress/load)
+        # --------------------------------------------------------
 
-    A0 = np.array([
-        [0.93, 0.22],
-        [0.03, 0.86],
-    ], dtype=float)
-
-    B0 = np.array([
-        [-0.28, 0.18],
-        [-0.20, 0.24],
-    ], dtype=float)
-
-    # In your code H0 plays the role of C
-    H0 = np.array([
-        [1.10, 0.35],
-        [0.55, 0.95],
-    ], dtype=float)
-
-    D0 = np.array([
-        [-0.04, 0.20],
-        [-0.10, 0.16],
-    ], dtype=float)
-
-    Q0 = np.array([
-        [0.020, 0.008],
-        [0.008, 0.015],
-    ], dtype=float)
-
-    R0 = np.array([
-        [0.045, 0.012],
-        [0.012, 0.040],
-    ], dtype=float)
-
-    Q0 = project_to_psd(Q0)
-    R0 = project_to_psd(R0)
-
-    x0 = np.array([0.35, 0.10], dtype=float)
-    m0 = x0.copy()
-
-    P0 = np.array([
-        [0.040, 0.010],
-        [0.010, 0.030],
-    ], dtype=float)
-    P0 = project_to_psd(P0)
-
-    dA = np.zeros_like(A0)
-    dB = np.zeros_like(B0)
-    dH = np.zeros_like(H0)
-    dD = np.zeros_like(D0)
-    dQ = np.zeros_like(Q0)
-    dR = np.zeros_like(R0)
-
-    # --------------------------------------------------------
-    # Simulate
-    # --------------------------------------------------------
-    x, y, u, mats = simulate_lgssm_nd(
-        A0=A0, B0=B0, H0=H0, D0=D0,
-        T=T, seed=seed, x0=x0,
-        Q0=Q0, R0=R0,
-        dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
-        u_low=-0.5, u_high=0.5,
-    )
-
-    # --------------------------------------------------------
-    # Attack setup
-    # --------------------------------------------------------
-    t = 7
-    epsilon = 5.991  # 95% chi-square threshold in 2D
-
-    def sigmoid(z: float | np.ndarray) -> np.ndarray:
-        z = np.asarray(z, dtype=float)
-        return 1.0 / (1.0 + np.exp(-z))
-
-
-    def g_scalar(x_vec: np.ndarray) -> float:
-        """
-        Risk / alarm probability based on latent severity and trend.
-        x_vec[0] = severity level
-        x_vec[1] = worsening trend
-        """
-        x_vec = np.asarray(x_vec, dtype=float)
-        x1, x2 = x_vec[0], x_vec[1]
-
-        beta0 = -1.8
-        beta1 =  1.4
-        beta2 =  0.9
-        beta3 =  0.8
-        beta4 =  0.6
-
-        z = beta0 + beta1 * x1 + beta2 * x2 + beta3 * x1 * x2 + beta4 * x1**2
-        return float(sigmoid(z))
-
-
-    def g_scalar_grad(x_vec: np.ndarray) -> np.ndarray:
-        """
-        Gradient of the scalar risk probability wrt x.
-        Returns shape (n_x,)
-        """
-        x_vec = np.asarray(x_vec, dtype=float)
-        x1, x2 = x_vec[0], x_vec[1]
-
-        beta0 = -1.8
-        beta1 =  1.4
-        beta2 =  0.9
-        beta3 =  0.8
-        beta4 =  0.6
-
-        z = beta0 + beta1 * x1 + beta2 * x2 + beta3 * x1 * x2 + beta4 * x1**2
-        s = float(sigmoid(z))
-
-        dz_dx1 = beta1 + beta3 * x2 + 2.0 * beta4 * x1
-        dz_dx2 = beta2 + beta3 * x1
-
-        # d sigma(z) / dz = sigma(z) * (1 - sigma(z))
-        common = s * (1.0 - s)
-
-        return np.array([
-            common * dz_dx1,
-            common * dz_dx2,
+        A0 = np.array([
+            [0.93, 0.22],
+            [0.03, 0.86],
         ], dtype=float)
 
-    M_star = np.array([10.0],dtype=float)  # target risk level (e.g. want to minimize risk)
+        B0 = np.array([
+            [-0.28, 0.18],
+            [-0.20, 0.24],
+        ], dtype=float)
 
-    # --------------------------------------------------------
-    # Attack optimization
-    # --------------------------------------------------------
-    y_star, attack_hist = white_box_point_attack_nd(
-        t=t,
-        y=y, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        P0=P0, m0=m0,
-        epsilon=epsilon,
-        M_star=M_star,
-        g=g_scalar,
-        g_grad=None,   # put None if you want finite differences
-        eta=0.05,
-        n_steps=5000,
-        n_mc=400,
-        seed=2026,
-    )
+        # In your code H0 plays the role of C
+        H0 = np.array([
+            [1.10, 0.35],
+            [0.55, 0.95],
+        ], dtype=float)
 
-    mu_t = attack_hist["mu_t"]
-    Sigma_t = attack_hist["Sigma_t"]
-    y_t = y[t].copy()
+        D0 = np.array([
+            [-0.04, 0.20],
+            [-0.10, 0.16],
+        ], dtype=float)
 
-    Sinv = inv_psd(Sigma_t)
-    constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
+        Q0 = np.array([
+            [0.10, 0.04],
+            [0.048, 0.15],
+        ], dtype=float)
 
-    print(f"\n[t={t}] feasibility value = {constr_val:.6f} (should be <= epsilon={epsilon})")
-    print(f"[t={t}] y_t               = {y_t}")
-    print(f"[t={t}] mu_t              = {mu_t}")
-    print(f"[t={t}] y_star            = {y_star}")
-    print(f"[t={t}] final objective   = {attack_hist['obj_hist'][-1]:.6f}")
+        R0 = np.array([
+            [0.15, 0.02],
+            [0.02, 0.120],
+        ], dtype=float)
 
-    # --------------------------------------------------------
-    # Baseline smoothing on original y
-    # --------------------------------------------------------
-    m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
-        y=y, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        m0=m0, P0=P0,
-    )
-    m_smooth_b, P_smooth_b = rts_smoother_nd(
-        m_filt=m_filt_b, P_filt=P_filt_b,
-        m_pred=m_pred_b, P_pred=P_pred_b,
-        A_t=mats["A_t"],
-    )
+        Q0 = project_to_psd(Q0)
+        R0 = project_to_psd(R0)
 
-    # --------------------------------------------------------
-    # Adversarial smoothing: replace only y[t] by y_star
-    # --------------------------------------------------------
-    y_adv = y.copy()
-    y_adv[t] = y_star
+        x0 = np.array([0.35, 0.10], dtype=float)
+        m0 = x0.copy()
 
-    m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
-        y=y_adv, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        m0=m0, P0=P0,
-    )
-    m_smooth_a, P_smooth_a = rts_smoother_nd(
-        m_filt=m_filt_a, P_filt=P_filt_a,
-        m_pred=m_pred_a, P_pred=P_pred_a,
-        A_t=mats["A_t"],
-    )
+        P0 = np.array([
+            [0.040, 0.010],
+            [0.010, 0.030],
+        ], dtype=float)
+        P0 = project_to_psd(P0)
 
+        dA = np.zeros_like(A0)
+        dB = np.zeros_like(B0)
+        dH = np.zeros_like(H0)
+        dD = np.zeros_like(D0)
+        dQ = np.zeros_like(Q0)
+        dR = np.zeros_like(R0)
 
-    # ---- Compare E[g(x_t)] (baseline vs attacked) at the attacked time t
-    mu_g_base_t, g_mean_base_t = estimate_E_g(
-        m=m_smooth_b[t],
-        P=P_smooth_b[t],
-        g=g_scalar,
-        n_mc=4000,
-        seed=7,
-    )
+        # --------------------------------------------------------
+        # Simulate
+        # --------------------------------------------------------
+        x, y, u, mats = simulate_lgssm_nd(
+            A0=A0, B0=B0, H0=H0, D0=D0,
+            T=T, seed=seed, x0=x0,
+            Q0=Q0, R0=R0,
+            dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
+            u_low=-0.5, u_high=0.5,
+        )
 
-    mu_g_adv_t, g_mean_adv_t = estimate_E_g(
-        m=m_smooth_a[t],
-        P=P_smooth_a[t],
-        g=g_scalar,
-        n_mc=4000,
-        seed=7,   # same seed => fair comparison
-    )
+        # --------------------------------------------------------
+        # Attack setup
+        # --------------------------------------------------------
+        t = T
+        epsilon = 5.991  # 95% chi-square threshold in 2D
 
-    print("\n=== g(x_t) comparison at attacked time t ===")
-    print(f"t = {t}")
-    print(f"E[g(x_t) | y]        = {mu_g_base_t}")
-    print(f"E[g(x_t) | y_attack] = {mu_g_adv_t}")
-
-    # --------------------------------------------------------
-    # Save figure
-    # --------------------------------------------------------
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(out_dir, f"attack_on_g_nograd_four_panels_t{t}_T{T}_seed{seed}.png")
-
-    plot_attack_figure_four_panels(
-        t=t,
-        y_t=y_t,
-        mu_t=mu_t,
-        Sigma_t=Sigma_t,
-        y_star=y_star,
-        y_path=attack_hist["y_hist"],
-        epsilon=epsilon,
-        x_true=x,
-        m_smooth_base=m_smooth_b, P_smooth_base=P_smooth_b,
-        m_smooth_adv=m_smooth_a, P_smooth_adv=P_smooth_a,
-        obj_hist=attack_hist["obj_hist"],
-        outpath=outpath,
-    )
-
-    print(f"\nSaved figure to: {outpath}")
+        def sigmoid(z: float | np.ndarray) -> np.ndarray:
+            z = np.asarray(z, dtype=float)
+            return 1.0 / (1.0 + np.exp(-z))
 
 
-if __name__ == "__main__":
-    main()
+        def g_scalar(x_vec: np.ndarray) -> float:
+            """
+            Risk / alarm probability based on latent severity and trend.
+            x_vec[0] = severity level
+            x_vec[1] = worsening trend
+            """
+            x_vec = np.asarray(x_vec, dtype=float)
+            x1, x2 = x_vec[0], x_vec[1]
+
+            beta0 = -1.8
+            beta1 =  1.4
+            beta2 =  0.9
+            beta3 =  0.8
+            beta4 =  0.6
+
+            z = beta0 + beta1 * x1 + beta2 * x2 + beta3 * x1 * x2 + beta4 * x1**2
+            return float(sigmoid(z))
+
+
+        def g_scalar_grad(x_vec: np.ndarray) -> np.ndarray:
+            """
+            Gradient of the scalar risk probability wrt x.
+            Returns shape (n_x,)
+            """
+            x_vec = np.asarray(x_vec, dtype=float)
+            x1, x2 = x_vec[0], x_vec[1]
+
+            beta0 = -1.8
+            beta1 =  1.4
+            beta2 =  0.9
+            beta3 =  0.8
+            beta4 =  0.6
+
+            z = beta0 + beta1 * x1 + beta2 * x2 + beta3 * x1 * x2 + beta4 * x1**2
+            s = float(sigmoid(z))
+
+            dz_dx1 = beta1 + beta3 * x2 + 2.0 * beta4 * x1
+            dz_dx2 = beta2 + beta3 * x1
+
+            # d sigma(z) / dz = sigma(z) * (1 - sigma(z))
+            common = s * (1.0 - s)
+
+            return np.array([
+                common * dz_dx1,
+                common * dz_dx2,
+            ], dtype=float)
+
+        M_star = np.array([1.0],dtype=float)  # target risk level (e.g. want to minimize risk)
+
+        # --------------------------------------------------------
+        # Attack optimization
+        # --------------------------------------------------------
+        y_star, attack_hist = white_box_point_attack_nd(
+            t=t,
+            y=y, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            P0=P0, m0=m0,
+            epsilon=epsilon,
+            M_star=M_star,
+            g=g_scalar,
+            g_grad=None,   # put None if you want finite differences
+            eta=0.15,
+            n_steps=500,
+            n_mc=400,
+            seed=2026,
+        )
+
+        mu_t = attack_hist["mu_t"]
+        Sigma_t = attack_hist["Sigma_t"]
+        y_t = y[t].copy()
+
+        Sinv = inv_psd(Sigma_t)
+        constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
+
+        print(f"\n[t={t}] feasibility value = {constr_val:.6f} (should be <= epsilon={epsilon})")
+        print(f"[t={t}] y_t               = {y_t}")
+        print(f"[t={t}] mu_t              = {mu_t}")
+        print(f"[t={t}] y_star            = {y_star}")
+        print(f"[t={t}] final objective   = {attack_hist['obj_hist'][-1]:.6f}")
+
+        # --------------------------------------------------------
+        # Baseline smoothing on original y
+        # --------------------------------------------------------
+        m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
+            y=y, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            m0=m0, P0=P0,
+        )
+        m_smooth_b, P_smooth_b = rts_smoother_nd(
+            m_filt=m_filt_b, P_filt=P_filt_b,
+            m_pred=m_pred_b, P_pred=P_pred_b,
+            A_t=mats["A_t"],
+        )
+
+        # --------------------------------------------------------
+        # Adversarial smoothing: replace only y[t] by y_star
+        # --------------------------------------------------------
+        y_adv = y.copy()
+        y_adv[t] = y_star
+
+        m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
+            y=y_adv, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            m0=m0, P0=P0,
+        )
+        m_smooth_a, P_smooth_a = rts_smoother_nd(
+            m_filt=m_filt_a, P_filt=P_filt_a,
+            m_pred=m_pred_a, P_pred=P_pred_a,
+            A_t=mats["A_t"],
+        )
+
+
+        # ---- Compare E[g(x_t)] (baseline vs attacked) at the attacked time t
+        mu_g_base_t, g_mean_base_t = estimate_E_g(
+            m=m_smooth_b[t],
+            P=P_smooth_b[t],
+            g=g_scalar,
+            n_mc=400,
+            seed=7,
+        )
+
+        mu_g_adv_t, g_mean_adv_t = estimate_E_g(
+            m=m_smooth_a[t],
+            P=P_smooth_a[t],
+            g=g_scalar,
+            n_mc=400,
+            seed=7,   # same seed => fair comparison
+        )
+
+        print("\n=== g(x_t) comparison at attacked time t ===")
+        print(f"t = {t}")
+        print(f"E[g(x_t) | y]        = {mu_g_base_t}")
+        print(f"E[g(x_t) | y_attack] = {mu_g_adv_t}")
+
+        # --------------------------------------------------------
+        # Save figure
+        # --------------------------------------------------------
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+        outpath = os.path.join(out_dir, f"attack_on_g_nograd_four_panels_t{t}_T{T}_seed{seed}.png")
+
+        plot_attack_figure_four_panels(
+            t=t,
+            y_t=y_t,
+            mu_t=mu_t,
+            Sigma_t=Sigma_t,
+            y_star=y_star,
+            y_path=attack_hist["y_hist"],
+            epsilon=epsilon,
+            x_true=x,
+            m_smooth_base=m_smooth_b, P_smooth_base=P_smooth_b,
+            m_smooth_adv=m_smooth_a, P_smooth_adv=P_smooth_a,
+            obj_hist=attack_hist["obj_hist"],
+            outpath=outpath,
+        )
+
+        print(f"\nSaved figure to: {outpath}")
+
+
+    if __name__ == "__main__":
+        main()
