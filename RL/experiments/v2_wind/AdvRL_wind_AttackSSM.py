@@ -804,7 +804,7 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
 
     plt.grid(True, alpha=0.25)
     plt.xlabel("Episode")
-    plt.ylabel("Accumulated reward (cumulative sum)")
+    plt.ylabel("Accumulated reward")
     plt.title("Accumulated reward: clean vs noisy+KF vs attack+KF")
     plt.legend()
 

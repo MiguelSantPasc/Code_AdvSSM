@@ -758,7 +758,7 @@ def plot_attack_figure_four_panels(
 
         # Leyenda compacta dentro (sin montarse)
         ax.legend(
-            loc="upper right",
+            loc="upper left",
             frameon=True,
             framealpha=0.94,
             ncol=2,
@@ -800,13 +800,30 @@ def plot_attack_figure_four_panels(
         color=c_geom2, linewidth=1.8, linestyle="--", alpha=0.95
     )
 
-    ax_geom.scatter([mu_t[0]], [mu_t[1]], s=55, marker="o", color=c_mu, label=r"$\mu_t$", zorder=5)
-    ax_geom.scatter([y_t[0]], [y_t[1]], s=65, marker="x", linewidths=2.0, color=c_y, label=r"$y_t$", zorder=6)
+    ax_geom.scatter([mu_t[0]], [mu_t[1]], s=55, marker="o", color=c_mu, label=r"$o_{-t}$", zorder=5)
+    ax_geom.scatter([y_t[0]], [y_t[1]], s=65, marker="x", linewidths=2.0, color=c_y, label=r"$o_t$", zorder=6)
     ax_geom.scatter([y_star[0]], [y_star[1]], s=120, marker="*", color=c_star, edgecolor="black",
-                    linewidths=0.4, label=r"$y^\star$", zorder=7)
+                    linewidths=0.4, label=r"$o^{adv}_t$", zorder=7)
 
     ax_geom.plot([y_t[0], y_star[0]], [y_t[1], y_star[1]],
                  color=c_adv, linewidth=1.4, alpha=0.85, linestyle="-.", zorder=4)
+    
+    ax_geom.annotate(
+        "",
+        xy=(y_star[0], y_star[1]),      # destino: o_t^{adv}
+        xytext=(y_t[0], y_t[1]),        # origen: o_t
+        arrowprops=dict(
+            arrowstyle="->",
+            color=c_adv,
+            lw=1.8,
+            alpha=0.95,
+            linestyle="-.",
+            shrinkA=6,
+            shrinkB=8,
+            mutation_scale=14,
+        ),
+        zorder=4
+    )
 
     try:
         (xlim_g, ylim_g) = _points_limits([pts_constraint, pts_obj, y_t, mu_t, y_star], pad_frac=0.12)
@@ -817,10 +834,10 @@ def plot_attack_figure_four_panels(
     ax_geom.set_ylim(*ylim_g)
 
     ax_geom.set_title(f"(C) Attack geometry at t={t}", loc="left", fontweight="semibold")
-    ax_geom.set_xlabel("y[0]")
-    ax_geom.set_ylabel("y[1]")
+    ax_geom.set_xlabel(r"$o_t^x$")
+    ax_geom.set_ylabel(r"$o_t^y$", labelpad=-75)
     ax_geom.set_aspect("equal", adjustable="box")
-    ax_geom.legend(loc="upper right", frameon=True, framealpha=0.94)
+    ax_geom.legend(loc="upper left", frameon=True, framealpha=0.94)
 
     # =========================================================
     # BOTTOM-RIGHT: trajectory in state-space (x1 vs x2)
@@ -903,16 +920,16 @@ def main() -> None:
     A0 = np.array([[0.65, 0.40],
                    [-0.15, 0.70]], dtype=float)
 
-    B0 = np.array([[1.65, 0.40],
+    B0 = np.array([[1.65, 1.40],
                    [-0.15, 0.70]], dtype=float)
 
     H0 = np.eye(n_y, n_x)
     D0 = np.zeros((n_y, n_u), dtype=float)
 
     Q0 = 0.3 * np.array([[1.6, -0.40],
-                         [0.15, 0.70]], dtype=float)
+                         [-1.15, 0.70]], dtype=float)
 
-    R0 = 0.2 * np.array([[0.65, 0.40],
+    R0 = 0.42 * np.array([[0.65, 0.40],
                          [-0.15, 1.70]], dtype=float)
 
     # project covariances to PSD (recommended)
@@ -964,9 +981,9 @@ def main() -> None:
     constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
     print(f"\n[t={t}] constraint value = {constr_val:.6f} (should be <= epsilon={epsilon})")
     print(f"[t={t}] objective value  = {obj_star:.6f}")
-    print(f"[t={t}] y_t      = {y_t}")
-    print(f"[t={t}] mu_t     = {mu_t}")
-    print(f"[t={t}] y_star   = {y_star}")
+    print(f"[t={t}] o_t              = {y_t}")
+    print(f"[t={t}] o_-t             = {mu_t}")
+    print(f"[t={t}] o_t^{{adv}}      = {y_star}")
 
     # ---- RTS smoother on baseline y
     m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
