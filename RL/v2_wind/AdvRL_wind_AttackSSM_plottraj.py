@@ -32,7 +32,7 @@ arrows so that the geometric effect of corrupted measurements is visible.
 #   so all perceived trajectories start at the true initial point, typically (0,0).
 #
 # Output:
-#   ../../results/three_paths_clean_noisyKF_attackKF.png
+#   ./outputs/figures/three_paths_clean_noisyKF_attackKF.png
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ OBS_ALPHA = 0.90
 # PATHS
 # ------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../.."))
 
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -89,8 +89,8 @@ if _PROJECT_ROOT not in sys.path:
 from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
-MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
-RESULTS_DIR = os.path.abspath(os.path.join(_THIS_DIR, "../../results"))
+MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+FIGURES_DIR = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "figures"))
 
 
 # ============================================================
@@ -963,8 +963,8 @@ def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"Model not found at:\n  {MODEL_PATH}")
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    outpath = os.path.join(RESULTS_DIR, "three_paths_clean_noisyKF_attackKF.png")
+    os.makedirs(FIGURES_DIR, exist_ok=True)
+    outpath = os.path.join(FIGURES_DIR, "three_paths_clean_noisyKF_attackKF.png")
     data_path = data_path_for_plot(outpath)
 
     if os.path.exists(data_path):

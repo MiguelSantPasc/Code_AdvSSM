@@ -1,10 +1,11 @@
 """
 Small cache and filesystem helpers used by the experiment scripts.
 
-Most scripts in this repository produce a figure together with the numerical
-arrays that generated it. The convention is:
+Most scripts in this repository produce both rendered figures and cached
+numerical arrays. The repository now keeps those artifacts split as:
 
-    figure.png  <->  figure.npz
+    outputs/figures/<name>.png
+    outputs/data/<name>.npz
 
 The helpers below keep that convention in one place. They do not encode any
 Kalman-filter mathematics directly; they support the reproducibility workflow
@@ -27,10 +28,45 @@ def ensure_dir(path: str) -> str:
     return path
 
 
+def outputs_root_for(module_dir: str) -> str:
+    """Return the canonical outputs root for a module directory."""
+    return ensure_dir(os.path.join(module_dir, "outputs"))
+
+
+def figures_dir_for(module_dir: str) -> str:
+    """Return the canonical figure-output directory for a module."""
+    return ensure_dir(os.path.join(outputs_root_for(module_dir), "figures"))
+
+
+def data_dir_for(module_dir: str) -> str:
+    """Return the canonical numerical-cache directory for a module."""
+    return ensure_dir(os.path.join(outputs_root_for(module_dir), "data"))
+
+
+def saved_models_dir_for(module_dir: str) -> str:
+    """Return the canonical model-checkpoint directory for RL experiments."""
+    return ensure_dir(os.path.join(outputs_root_for(module_dir), "saved_models"))
+
+
 def data_path_for_plot(plot_path: str, suffix: str = ".npz") -> str:
-    """Return a data-cache path next to a plot path."""
-    root, _ = os.path.splitext(plot_path)
-    return f"{root}{suffix}"
+    """
+    Return the canonical data-cache path associated with a figure path.
+
+    If `plot_path` already lives in `outputs/figures`, the cache is redirected
+    to the sibling `outputs/data` directory while keeping the same stem.
+    """
+    plot_dir = os.path.dirname(plot_path)
+    plot_stem = os.path.splitext(os.path.basename(plot_path))[0]
+
+    if os.path.basename(plot_dir) == "figures" and os.path.basename(os.path.dirname(plot_dir)) == "outputs":
+        target_dir = os.path.join(os.path.dirname(plot_dir), "data")
+    elif os.path.basename(plot_dir) == "output":
+        target_dir = os.path.join(os.path.dirname(plot_dir), "outputs", "data")
+    else:
+        target_dir = plot_dir
+
+    ensure_dir(target_dir)
+    return os.path.join(target_dir, f"{plot_stem}{suffix}")
 
 
 def save_npz(path: str, **arrays: Any) -> None:

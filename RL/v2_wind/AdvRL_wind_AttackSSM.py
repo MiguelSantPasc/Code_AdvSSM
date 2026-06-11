@@ -22,8 +22,8 @@ clean, noisy+KF, and attack+KF rollouts.
 #
 # HARD-CODED PATHS:
 #   - AdvRL_wind.py    : ./AdvRL_wind.py  (same folder as this script)
-#   - Model checkpoint : ../../saved_models/AdvRL_v2_policy.pt
-#   - Output figures   : ../../results/
+#   - Model checkpoint : ./outputs/saved_models/AdvRL_v2_policy.pt
+#   - Output figures   : ./outputs/figures/
 #
 # Curves plotted:
 #   1) clean
@@ -91,7 +91,7 @@ SEED0 = 1_000
 # PATHS
 # ------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../.."))
 
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -99,8 +99,8 @@ if _PROJECT_ROOT not in sys.path:
 from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
-MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
-RESULTS_DIR = os.path.abspath(os.path.join(_THIS_DIR, "../../results"))
+MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+FIGURES_DIR = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "figures"))
 
 
 # ============================================================
@@ -896,7 +896,7 @@ def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"Model not found at:\n  {MODEL_PATH}")
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(FIGURES_DIR, exist_ok=True)
 
     if _THIS_DIR not in sys.path:
         sys.path.insert(0, _THIS_DIR)
@@ -939,7 +939,7 @@ def main():
     print(f"[cfg] ATTACK_STD={ATTACK_STD} | ATTACK_EPS={ATTACK_EPS}")
     print(f"[cfg] KF_MEAS_STD={KF_MEAS_STD} | KF_PROC_STD={KF_PROC_STD}")
     print(f"[cfg] PGD_STEPS={PGD_STEPS} | PGD_STEP_SIZE={PGD_STEP_SIZE} | MC_SAMPLES={MC_SAMPLES}")
-    print(f"[out] RESULTS_DIR={RESULTS_DIR}")
+    print(f"[out] FIGURES_DIR={FIGURES_DIR}")
 
     plot_accumulated_reward_clean_noisykf_attackkf(
         AdvRLEnvConfig=AdvRLEnvConfig,
@@ -959,7 +959,7 @@ def main():
         n_episodes=N_EPISODES,
         seed0=SEED0,
         device=DEVICE,
-        results_dir=RESULTS_DIR,
+        results_dir=FIGURES_DIR,
     )
 
     print("[done] Evaluation finished.")

@@ -16,9 +16,9 @@ For each attacked time, the script records:
 - the global smoothing error over the full trajectory.
 
 The final plot is distribution-aware: each attacked time is summarized with a
-boxplot across Monte Carlo runs and an overlaid mean curve. This matches the
-experiment better than a mean-only summary and keeps the plot aligned with the
-intended "boxplots + means" presentation.
+mean comparison curve for the local effect and another for the global effect.
+Both are shown on the same panel with separate vertical axes so their temporal
+trends can be compared without one scale visually flattening the other.
 """
 
 from __future__ import annotations
@@ -26,6 +26,12 @@ from __future__ import annotations
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+try:
+    from AdvSSM.io_utils import data_dir_for, figures_dir_for
+except ModuleNotFoundError:
+    from io_utils import data_dir_for, figures_dir_for
 
 
 # ============================================================
@@ -662,9 +668,9 @@ def _set_plot_theme() -> None:
         "ytick.labelsize": 10,
         "axes.linewidth": 0.9,
         "axes.grid": True,
-        "grid.alpha": 0.16,
-        "grid.linewidth": 0.7,
-        "grid.linestyle": "-",
+        "grid.alpha": 0.24,
+        "grid.linewidth": 0.75,
+        "grid.linestyle": "--",
         "lines.linewidth": 2.0,
         "lines.markersize": 5.5,
         "figure.facecolor": "white",
@@ -674,90 +680,18 @@ def _set_plot_theme() -> None:
 
 
 def _style_axis(ax) -> None:
-    """Apply a soft background, light spines, and horizontal grid lines."""
+    """Apply a soft background, darker spines, and denser dashed grid lines."""
     ax.set_facecolor("#FCFCFD")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_alpha(0.35)
-    ax.spines["bottom"].set_alpha(0.35)
-    ax.grid(True, axis="y", alpha=0.18)
-    ax.grid(False, axis="x")
+    ax.spines["left"].set_color("black")
+    ax.spines["bottom"].set_color("black")
+    ax.spines["left"].set_alpha(0.9)
+    ax.spines["bottom"].set_alpha(0.9)
+    ax.minorticks_on()
+    ax.grid(True, which="major", axis="both", linestyle="--", alpha=0.28, linewidth=0.75)
+    ax.grid(True, which="minor", axis="both", linestyle="--", alpha=0.14, linewidth=0.55)
     ax.set_axisbelow(True)
-
-def _boxplot_with_mean(
-    ax,
-    data_mat: np.ndarray,
-    t_values: np.ndarray,
-    title: str,
-    ylabel: str,
-    box_color: str,
-    mean_color: str,
-    adaptive_ylim: bool = True,
-) -> None:
-    """
-    Draw one panel with per-time Monte Carlo boxplots and an overlaid mean line.
-
-    The boxplots show spread across random runs, while the mean line keeps the
-    main trend easy to compare across attacked times.
-    """
-    data_by_t = [data_mat[:, i][np.isfinite(data_mat[:, i])] for i in range(data_mat.shape[1])]
-
-    boxplot = ax.boxplot(
-        data_by_t,
-        positions=t_values.astype(float),
-        widths=0.58,
-        patch_artist=True,
-        showfliers=False,
-        whis=(10, 90),
-        medianprops={"color": "#4E4E4E", "linewidth": 1.35},
-        whiskerprops={"color": box_color, "linewidth": 1.1, "alpha": 0.85},
-        capprops={"color": box_color, "linewidth": 1.1, "alpha": 0.85},
-        boxprops={"edgecolor": box_color, "linewidth": 1.1},
-    )
-
-    for patch in boxplot["boxes"]:
-        patch.set_facecolor(box_color)
-        patch.set_alpha(0.28)
-
-    # Overlay the mean so the overall trend remains immediately readable.
-    means = np.array([
-        np.nanmean(data_mat[:, i]) if np.any(np.isfinite(data_mat[:, i])) else np.nan
-        for i in range(data_mat.shape[1])
-    ])
-
-    ax.plot(
-        t_values,
-        means,
-        color=mean_color,
-        marker="o",
-        markersize=5.5,
-        linewidth=2.3,
-        zorder=4,
-        label="Mean",
-    )
-
-    if adaptive_ylim:
-        finite_values = np.concatenate([vals for vals in data_by_t if vals.size > 0]) if data_by_t else np.array([])
-        if finite_values.size > 0:
-            y_min = float(np.min(finite_values))
-            y_max = float(np.max(finite_values))
-            span = max(y_max - y_min, 1e-8)
-            pad = 0.12 * span
-
-            if span < 1e-6:
-                pad = 0.1 * max(abs(y_min), 1.0)
-
-            ax.set_ylim(y_min - pad, y_max + pad)
-
-    ax.set_title(title, loc="left", pad=10)
-    ax.set_ylabel(ylabel)
-    ax.legend(
-        loc="upper right",
-        frameon=True,
-        fancybox=True,
-        framealpha=0.95,
-        edgecolor="#DDDDDD",
-    )
 
 
 def _mean_line_plot(
@@ -799,7 +733,7 @@ def _mean_line_plot(
             pad = 0.12 * span
 
             if span < 1e-6:
-                pad = 0.1 * max(abs(y_min), abs(y_max), 1.0)
+                pad = 0.01 * max(abs(y_min), abs(y_max), 1.0)
 
             ax.set_ylim(y_min - pad, y_max + pad)
 
@@ -822,26 +756,26 @@ def plot_attack_effect_boxplots(
     epsilon: float,
 ) -> None:
     """
-    Plot the Monte Carlo attack study with one panel for local effects and one
-    for global effects.
-
-    The figure is intentionally minimal: no boxplots, no legends, and no
-    titles. Each panel shows only the mean trend across attacked times.
+    Plot the mean local and global attack effects together in one panel so
+    their dependence on the attacked time can be compared directly.
     """
     _set_plot_theme()
 
     c_local_line = "#5E738F"
     c_global_line = "#6E9181"
+    t_offset = 0.05
 
-    fig, axes = plt.subplots(
-        2, 1,
-        figsize=(15.5, 9.4),
-        sharex=True,
-        constrained_layout=True,
-    )
-
-    for ax in axes:
-        _style_axis(ax)
+    fig, ax = plt.subplots(figsize=(15.5, 6.2), constrained_layout=True)
+    _style_axis(ax)
+    ax.spines["left"].set_position(("axes", 0.03))
+    ax_right = ax.twinx()
+    ax_right.set_facecolor("none")
+    ax_right.spines["top"].set_visible(False)
+    ax_right.spines["left"].set_visible(False)
+    ax_right.spines["right"].set_color("black")
+    ax_right.spines["right"].set_alpha(0.9)
+    ax_right.spines["right"].set_position(("axes", 0.97))
+    ax_right.grid(False)
     
     local_means = np.array([
         np.nanmean(local_mat[:, i]) if np.any(np.isfinite(local_mat[:, i])) else np.nan
@@ -851,48 +785,76 @@ def plot_attack_effect_boxplots(
         np.nanmean(global_mat[:, i]) if np.any(np.isfinite(global_mat[:, i])) else np.nan
         for i in range(global_mat.shape[1])
     ], dtype=float)
+    local_t_values = t_values.astype(float) - t_offset
+    global_t_values = t_values.astype(float) + t_offset
 
-    axes[0].plot(
-        t_values,
+    ax.plot(
+        local_t_values,
         local_means,
         color=c_local_line,
         marker="o",
         markersize=5.5,
         linewidth=2.3,
         zorder=3,
+        label="Local mean",
     )
-    axes[0].set_title("Mean local effect of the attack", loc="left", pad=8)
-    axes[0].set_ylabel(r"$\sum_j \left|x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}\right|$")
 
-    axes[1].plot(
-        t_values,
+    ax_right.plot(
+        global_t_values,
         global_means,
         color=c_global_line,
         marker="o",
         markersize=5.5,
         linewidth=2.3,
         zorder=3,
+        label="Global mean",
     )
-    axes[1].set_title("Mean global effect of the attack", loc="left", pad=8)
-    axes[1].set_ylabel(r"$\sum_{k=0}^{T}\sum_j \left|x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}\right|$")
 
-    for ax, values in zip(axes, [local_means, global_means]):
-        finite_values = values[np.isfinite(values)]
-        if finite_values.size > 0:
-            y_min = float(np.min(finite_values))
-            y_max = float(np.max(finite_values))
-            span = max(y_max - y_min, 1e-8)
-            pad = 0.12 * span
+    finite_local = local_means[np.isfinite(local_means)]
+    if finite_local.size > 0:
+        y_min = float(np.min(finite_local))
+        y_max = float(np.max(finite_local))
+        span = max(y_max - y_min, 1e-8)
+        pad = 0.12 * span
 
-            if span < 1e-6:
-                pad = 0.1 * max(abs(y_min), abs(y_max), 1.0)
+        if span < 1e-6:
+            pad = 0.01 * max(abs(y_min), abs(y_max), 1.0)
 
-            ax.set_ylim(y_min - pad, y_max + pad)
+        ax.set_ylim(y_min - pad, y_max + pad)
 
+    finite_global = global_means[np.isfinite(global_means)]
+    if finite_global.size > 0:
+        y_min = float(np.min(finite_global))
+        y_max = float(np.max(finite_global))
+        span = max(y_max - y_min, 1e-8)
+        pad = 0.12 * span
 
-    axes[1].set_xlabel("Attacked time step $t$")
-    axes[1].set_xticks(t_values)
-    axes[1].set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
+        if span < 1e-6:
+            pad = 0.01 * max(abs(y_min), abs(y_max), 1.0)
+
+        ax_right.set_ylim(y_min - pad, y_max + pad)
+
+    ax.set_xlabel("Attacked time step $t$")
+    ax.set_ylabel("Mean local attack effect", color="black")
+    ax_right.set_ylabel("Mean global attack effect", color="black")
+    ax.set_xticks(t_values)
+    ax.set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
+    ax.tick_params(axis="y", colors="black", direction="in", pad=8)
+    ax_right.tick_params(axis="y", colors="black", direction="in", pad=8)
+
+    legend_handles = [
+        Line2D([0], [0], color=c_local_line, marker="o", linewidth=2.3, markersize=5.5, label="Local mean"),
+        Line2D([0], [0], color=c_global_line, marker="o", linewidth=2.3, markersize=5.5, label="Global mean"),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(0.055, 0.98),
+        frameon=True,
+        fancybox=True,
+        framealpha=0.95,
+        edgecolor="#DDDDDD",
+    )
 
     out_dir = os.path.dirname(outpath)
     if out_dir:
@@ -911,16 +873,17 @@ def main() -> None:
     base_seed = 2022
     force_recompute = False
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    figures_dir = figures_dir_for(module_dir)
+    data_dir = data_dir_for(module_dir)
 
     cache_path = os.path.join(
-        out_dir,
+        data_dir,
         f"mc_attack_effects_data_N{N_runs}_T{T}_eps{epsilon:.3f}_seed{base_seed}.npz"
     )
     fig_path = os.path.join(
-        out_dir,
-        f"mc_attack_effects_boxplots_N{N_runs}_T{T}_eps{epsilon:.3f}.png"
+        figures_dir,
+        f"mc_attack_effects_dual_axis_means_N{N_runs}_T{T}_eps{epsilon:.3f}.png"
     )
 
     if os.path.exists(cache_path) and not force_recompute:

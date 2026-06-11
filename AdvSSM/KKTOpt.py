@@ -26,9 +26,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
 except ModuleNotFoundError:
-    from io_utils import cached_npz, data_path_for_plot
+    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
 
 
 # ============================================================
@@ -924,8 +924,7 @@ def main() -> None:
     epsilon = 5.991  # typical 95% chi-square in 2D constraint
     force_recompute = False
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     outpath = os.path.join(out_dir, f"attack_four_panels_t{t}_T{T}_seed{seed}.png")
     data_path = data_path_for_plot(outpath)
 

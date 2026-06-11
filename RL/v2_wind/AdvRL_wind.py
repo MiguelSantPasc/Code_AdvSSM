@@ -1,47 +1,58 @@
 #!/usr/bin/env python3
 """
-Train and visualize the no-wind 2D point-agent policy.
+Train and visualize the wind-driven 2D point-agent policy.
 
-The environment is an SSM-style control problem with augmented state
-x_t = [p_x, p_y, 1]^T:
+The environment is written as an SSM-style control problem with augmented
+state x_t = [p_x, p_y, 1]^T:
 
-    x_{t+1} = I x_t + B a_t_aug + w_t
+    x_{t+1} = A_t x_t + B a_t_aug + w_t
     y_t     = F x_t + v_t
 
-The policy receives only z_t = (goal - y_t) / goal_r_max. This older no-wind
-experiment provides the baseline actor-critic/PPO code that the wind experiment
-extends by adding wind components to the observation.
+where A_t injects wind through the homogeneous coordinate,
+
+    A_t = [[1, 0, epsilon cos(psi_t)],
+           [0, 1, epsilon sin(psi_t)],
+           [0, 0, 1]],
+
+and the policy observes z_t = [(goal - y_t) / goal_r_max, wind_x, wind_y].
+This file owns the environment, actor-critic model, PPO training loop, rollout
+collection, and basic trajectory/value plots for the wind case.
 """
 
-# AdvRL_v2_nowind.py
-# RL experiment: 2D point agent, NO WIND, SSM-style environment.
+# AdvRL_wind.py
+# RL experiment: 2D point agent with WIND dynamics formalized as an SSM.
 #
-# Hidden augmented state:
+# SSM-inspired model (augmented state):
 #   x_t = [p_x, p_y, 1]^T in R^3
 #
-# Transition (no wind):
-#   x_{t+1} = A x_t + B a_t_aug + w_t
-#   A = I_3
-#   B = [[1,0,0],
-#        [0,1,0],
-#        [0,0,0]]
+#   x_{t+1} = A_t x_t + B a_t_aug + w_t
+#   y_t     = F x_t + v_t
+#
+# where:
+#   A_t = [[1, 0, eps*cos(psi_t)],
+#          [0, 1, eps*sin(psi_t)],
+#          [0, 0, 1]]
+#
+#   B   = [[1, 0, 0],
+#          [0, 1, 0],
+#          [0, 0, 0]]
+#
+# NEW ACTION (2D):
 #   a_t = [a_x, a_y] in [-1,1]^2
 #   a_t_aug = [a_x, a_y, 0]^T
+# -> Max step length is sqrt(2).
 #
-# Measurement:
-#   y_t = F x_t + v_t, F = [[1,0,0],[0,1,0]]
-#
-# RL observation returned to policy (2D):
-#   z_t = (goal - y_t) / goal_r_max
+# RL observation returned to policy (4D):
+#   z_t = [ (goal - y_t)/goal_r_max, wind_x_t, wind_y_t ]
 #
 # Rewards:
 #   -1 per step (until done)
-#   +success_reward on success
-#   timeout_penalty on timeout
+#   +40 on success
+#   -40 on timeout
 #
 # No noise (default here): obs_noise_std=0, proc_noise_std=0
 #
-# Saves model to: RL/saved_models/AdvRL_v2_nowind_policy.pt
+# Saves model to: RL/v2_wind/outputs/saved_models/AdvRL_v2_policy.pt
 
 from __future__ import annotations
 
@@ -60,56 +71,64 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../.."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
 # -----------------------------
-# Environment (SSM-style, NO WIND)
+# Environment (SSM-style with Wind)
 # -----------------------------
 
 @dataclass
-class AdvRLEnvConfigNoWind:
+class AdvRLEnvConfig:
     goal_r_min: float = 5.0
     goal_r_max: float = 15.0
 
     # SSM noises
-    obs_noise_std: float = 0.00   # measurement noise std
-    proc_noise_std: float = 0.00  # process noise std on transition
+    obs_noise_std: float = 0.00   # sigma_v (measurement noise)
+    proc_noise_std: float = 0.00  # sigma_w (process noise on transition)
 
     max_steps: int = 40
-    goal_radius: float = 1.0
+    goal_radius: float = 0.35
     seed: int = 0
+
+    # Wind parameters
+    wind_epsilon: float = 0.85       # epsilon in A_t
+    wind_volatility: float = 0.25    # random walk std for psi_t
 
     # Rewards (sparse)
     step_penalty: float = -1.0
-    success_reward: float = 40.0
+    success_reward: float = 5.0
     timeout_penalty: float = -40.0
 
 
-class AdvRL2DEnvNoWind:
+class AdvRL2DEnv:
     """
-    SSM-based environment without wind.
+    SSM-based environment.
 
     Hidden augmented state:
         x_t = [p_x, p_y, 1]^T in R^3
 
     Transition:
-        x_{t+1} = A x_t + B a_t_aug + w_t
-        A = I_3
-        B = [[1,0,0],[0,1,0],[0,0,0]]
-        a_t_aug = [a_x, a_y, 0]^T with a_x,a_y in [-1,1]
+        x_{t+1} = A_t x_t + B a_t_aug + w_t
+        A_t = [[1, 0, eps*cos(psi_t)],
+               [0, 1, eps*sin(psi_t)],
+               [0, 0, 1]]
+        B   = [[1, 0, 0],
+               [0, 1, 0],
+               [0, 0, 0]]
+        a_t_aug = [a_x, a_y, 0]^T   with a_x,a_y in [-1,1]
 
     Measurement:
-        y_t = F x_t + v_t, F = [[1,0,0],[0,1,0]]
+        y_t = F x_t + v_t,   F = [[1,0,0],[0,1,0]]
 
     RL observation:
-        z_t = [delta_x, delta_y] in R^2,
-        where delta = (goal - y_meas) / goal_r_max.
+        z_t = [delta_x, delta_y, wind_x, wind_y] in R^4,
+        where delta = (goal - y_meas) / goal_r_max (normalized).
     """
 
-    def __init__(self, cfg: AdvRLEnvConfigNoWind):
+    def __init__(self, cfg: AdvRLEnvConfig):
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
 
@@ -128,10 +147,30 @@ class AdvRL2DEnvNoWind:
             dtype=np.float32
         )
 
-        # Transition A = Identity (no wind drift)
-        self.A = np.eye(3, dtype=np.float32)
-
         self.reset()
+
+    @staticmethod
+    def _wrap_angle_pi(x: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        return (x + math.pi) % (2.0 * math.pi) - math.pi
+
+    def _A_t(self) -> np.ndarray:
+        eps = float(self.cfg.wind_epsilon)
+        c = math.cos(self.psi)
+        s = math.sin(self.psi)
+        return np.array(
+            [[1.0, 0.0, eps * c],
+             [0.0, 1.0, eps * s],
+             [0.0, 0.0, 1.0]],
+            dtype=np.float32
+        )
+
+    def _wind_vec(self) -> np.ndarray:
+        return np.array(
+            [self.cfg.wind_epsilon * math.cos(self.psi),
+             self.cfg.wind_epsilon * math.sin(self.psi)],
+            dtype=np.float32
+        )
 
     def _measure_position(self) -> np.ndarray:
         """
@@ -146,13 +185,17 @@ class AdvRL2DEnvNoWind:
 
     def _build_rl_obs(self) -> np.ndarray:
         """
-        RL obs z_t = [delta_x, delta_y],
+        RL obs z_t = [delta_x, delta_y, wind_x, wind_y],
         where delta = (goal - y_meas) / goal_r_max.
         """
-        delta = (self.goal - self.y_meas).astype(np.float32)
+        y = self.y_meas
+        delta = (self.goal - y).astype(np.float32)
+
         denom = float(self.cfg.goal_r_max) if self.cfg.goal_r_max > 0 else 1.0
-        delta = delta / denom
-        return delta.astype(np.float32)
+        delta = delta / denom  # IMPORTANT (you had this bugged before)
+
+        wind_vec = self._wind_vec()
+        return np.concatenate([delta, wind_vec]).astype(np.float32)
 
     # Gym-like API
     def reset(self) -> np.ndarray:
@@ -167,6 +210,10 @@ class AdvRL2DEnvNoWind:
         ang = float(self.rng.uniform(-math.pi, math.pi))
         self.goal = np.array([r * math.cos(ang), r * math.sin(ang)], dtype=np.float32)
 
+        # Initial wind direction psi_0
+        self.psi = float(self.rng.uniform(-math.pi, math.pi))
+        self.psi = self._wrap_angle_pi(self.psi)
+
         # Initial measurement y_0
         self.y_meas = self._measure_position()
 
@@ -179,12 +226,16 @@ class AdvRL2DEnvNoWind:
         ax = float(action[0])
         ay = float(action[1])
 
-        # Clamp
+        # Safety clamp
         ax = max(-1.0, min(1.0, ax))
         ay = max(-1.0, min(1.0, ay))
 
         # Augmented action in R^3
         a_aug = np.array([ax, ay, 0.0], dtype=np.float32)
+
+        # Transition matrix using current psi_t
+        A_t = self._A_t()
+        wind_vec_this_step = self._wind_vec().copy()
 
         # Process noise (R^3); keep augmented coordinate exact
         if self.cfg.proc_noise_std > 0:
@@ -193,12 +244,16 @@ class AdvRL2DEnvNoWind:
         else:
             w = np.zeros(3, dtype=np.float32)
 
-        # SSM state update: x_{t+1} = A x_t + B a_aug + w
-        self.x_ssm = (self.A @ self.x_ssm + self.B @ a_aug + w).astype(np.float32)
+        # SSM state update
+        self.x_ssm = (A_t @ self.x_ssm + self.B @ a_aug + w).astype(np.float32)
         self.x_ssm[2] = 1.0  # keep augmented coordinate = 1
 
         # Update true 2D position
         self.x = self.x_ssm[:2].copy()
+
+        # Evolve wind direction for NEXT step (random walk) + wrap
+        self.psi += float(self.rng.normal(0.0, self.cfg.wind_volatility))
+        self.psi = self._wrap_angle_pi(self.psi)
 
         # New measurement
         self.y_meas = self._measure_position()
@@ -227,7 +282,9 @@ class AdvRL2DEnvNoWind:
             "x_true": self.x.copy(),
             "x_ssm": self.x_ssm.copy(),
             "y_meas": self.y_meas.copy(),
-            "A": self.A.copy(),
+            "wind_psi": float(self.psi),
+            "wind_vec": wind_vec_this_step,
+            "A_t": A_t.copy(),
             "B": self.B.copy(),
             "F": self.F.copy(),
             "action_xy": np.array([ax, ay], dtype=np.float32),
@@ -239,7 +296,7 @@ class AdvRL2DEnvNoWind:
 
 
 # -----------------------------
-# Squashed Gaussian policy (2D action) with FIXED std
+# Squashed Gaussian policy (2D) with FIXED std
 # -----------------------------
 
 def atanh(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -256,7 +313,7 @@ class ActorCritic(nn.Module):
     std_fixed is constant and NOT learned.
     """
 
-    def __init__(self, obs_dim: int = 2, hidden: int = 128, act_dim: int = 2, std_fixed: float = 0.35):
+    def __init__(self, obs_dim: int = 4, hidden: int = 128, act_dim: int = 2, std_fixed: float = 0.35):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -274,9 +331,9 @@ class ActorCritic(nn.Module):
 
     def forward(self, obs: torch.Tensor):
         h = self.backbone(obs)
-        mu = self.mu(h)                 # (B,2)
-        v = self.v(h).squeeze(-1)       # (B,)
-        std = torch.full_like(mu, self.std_fixed)
+        mu = self.mu(h)  # (B,2)
+        v = self.v(h).squeeze(-1)  # (B,)
+        std = torch.full_like(mu, self.std_fixed)  # (B,2)
         return mu, std, v
 
     @torch.no_grad()
@@ -288,39 +345,39 @@ class ActorCritic(nn.Module):
           logp: float
           v: float
         """
-        mu, std, v = self.forward(obs.unsqueeze(0))
+        mu, std, v = self.forward(obs.unsqueeze(0))  # (1,2), (1,2), (1,)
         dist = torch.distributions.Normal(mu, std)
 
-        y = dist.sample()
-        logp_y = dist.log_prob(y).sum(-1)
+        y = dist.sample()  # (1,2)
+        logp_y = dist.log_prob(y).sum(-1)  # (1,)
 
-        a = torch.tanh(y)
-        log_det = torch.log(1 - a.pow(2) + 1e-8).sum(-1)
+        a = torch.tanh(y)  # (1,2)
+        log_det = torch.log(1 - a.pow(2) + 1e-8).sum(-1)  # (1,)
         logp = (logp_y - log_det).item()
 
-        action = a.squeeze(0).cpu().numpy().astype(np.float32)
+        action = a.squeeze(0).cpu().numpy().astype(np.float32)  # (2,)
         return action, float(logp), float(v.item())
 
     @torch.no_grad()
     def mean_action(self, obs: torch.Tensor) -> torch.Tensor:
         mu, _, _ = self.forward(obs.unsqueeze(0))
-        return torch.tanh(mu).squeeze(0)
+        return torch.tanh(mu).squeeze(0)  # (2,)
 
     def logp_and_value(self, obs: torch.Tensor, action: torch.Tensor):
         """
-        obs: (B,obs_dim)
+        obs: (B,4)
         action: (B,2) in [-1,1]
         """
         mu, std, v = self.forward(obs)
         dist = torch.distributions.Normal(mu, std)
 
         a = action
-        y = atanh(a)
+        y = atanh(a)  # inverse tanh
         logp_y = dist.log_prob(y).sum(-1)
         log_det = torch.log(1 - a.pow(2) + 1e-8).sum(-1)
         logp = logp_y - log_det
 
-        entropy = dist.entropy().sum(-1)  # base normal entropy
+        entropy = dist.entropy().sum(-1)  # base normal entropy (ok as bonus)
 
         return logp, v, entropy
 
@@ -370,11 +427,11 @@ def set_seed(seed: int):
 # Training
 # -----------------------------
 
-def train(env: AdvRL2DEnvNoWind, ppo_cfg: PPOConfig, model_path: str | None = None) -> ActorCritic:
+def train(env: AdvRL2DEnv, ppo_cfg: PPOConfig, model_path: str | None = None) -> ActorCritic:
     set_seed(ppo_cfg.seed)
     device = torch.device(ppo_cfg.device)
 
-    model = ActorCritic(obs_dim=2, hidden=128, act_dim=2, std_fixed=0.35).to(device)
+    model = ActorCritic(obs_dim=4, hidden=128, act_dim=2, std_fixed=0.35).to(device)
 
     if model_path and os.path.exists(model_path):
         print(f"Loading existing model from {model_path}")
@@ -394,8 +451,8 @@ def train(env: AdvRL2DEnvNoWind, ppo_cfg: PPOConfig, model_path: str | None = No
     current_ep_return = 0.0
 
     while steps_done < ppo_cfg.total_steps:
-        obs_buf = np.zeros((ppo_cfg.rollout_len, 2), dtype=np.float32)
-        act_buf = np.zeros((ppo_cfg.rollout_len, 2), dtype=np.float32)
+        obs_buf = np.zeros((ppo_cfg.rollout_len, 4), dtype=np.float32)
+        act_buf = np.zeros((ppo_cfg.rollout_len, 2), dtype=np.float32)  # 2D action
         logp_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.float32)
         rew_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.float32)
         done_buf = np.zeros((ppo_cfg.rollout_len,), dtype=np.bool_)
@@ -485,18 +542,26 @@ def train(env: AdvRL2DEnvNoWind, ppo_cfg: PPOConfig, model_path: str | None = No
 # -----------------------------
 
 @torch.no_grad()
-def run_episode_collect(env: AdvRL2DEnvNoWind, model: ActorCritic, device: str = "cpu"):
+def run_episode_collect(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu"):
     device_t = torch.device(device)
     obs = env.reset()
 
     traj = [env.x.copy()]
     obs_list = [obs.copy()]
+    wind_list = []
     goal = env.goal.copy()
     success = False
 
     for _ in range(env.cfg.max_steps):
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device_t)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)  # (2,)
+
+        current_wind = np.array(
+            [env.cfg.wind_epsilon * math.cos(env.psi),
+             env.cfg.wind_epsilon * math.sin(env.psi)],
+            dtype=np.float32
+        )
+        wind_list.append(current_wind)
 
         obs, r, done, info = env.step(action)
         traj.append(env.x.copy())
@@ -506,11 +571,11 @@ def run_episode_collect(env: AdvRL2DEnvNoWind, model: ActorCritic, device: str =
             success = bool(info.get("success", False))
             break
 
-    return np.array(traj), np.array(obs_list), goal, success
+    return np.array(traj), np.array(obs_list), np.array(wind_list), goal, success
 
 
 def plot_trajectories_grid(
-    env: AdvRL2DEnvNoWind,
+    env: AdvRL2DEnv,
     model: ActorCritic,
     episodes: int = 12,
     device: str = "cpu",
@@ -523,18 +588,18 @@ def plot_trajectories_grid(
 
     for i in range(episodes):
         ax = axes[i]
-        traj, obs_list, goal, success = run_episode_collect(env, model, device=device)
+        traj, obs_list, winds, goal, success = run_episode_collect(env, model, device=device)
 
         ax.plot(traj[:, 0], traj[:, 1], marker="o", markersize=2, linewidth=1, alpha=0.6)
         ax.scatter(traj[0, 0], traj[0, 1], marker="s", color="green")
         ax.scatter(traj[-1, 0], traj[-1, 1], marker="X", color="red")
         ax.scatter(goal[0], goal[1], marker="*", color="gold", s=100)
 
-        # Policy arrows (mean action vectors)
+        # Policy arrows: now directly action vectors
         Ux, Uy = [], []
         for ob in obs_list[:-1]:
             ob_t = torch.tensor(ob, dtype=torch.float32)
-            a_mean = model.mean_action(ob_t).cpu().numpy()
+            a_mean = model.mean_action(ob_t).cpu().numpy()  # (2,)
             Ux.append(float(a_mean[0]))
             Uy.append(float(a_mean[1]))
         Ux = np.array(Ux, dtype=np.float32)
@@ -544,9 +609,16 @@ def plot_trajectories_grid(
         ax.quiver(
             traj[:-1:step, 0], traj[:-1:step, 1],
             Ux[::step], Uy[::step],
-            angles="xy", scale_units="xy", scale=1.0,
             color="blue", alpha=0.5, width=0.006
         )
+
+        # Wind arrows
+        if len(winds) > 0:
+            ax.quiver(
+                traj[:-1:step, 0], traj[:-1:step, 1],
+                winds[::step, 0], winds[::step, 1],
+                color="skyblue", alpha=0.4, width=0.005
+            )
 
         circ = plt.Circle((goal[0], goal[1]), env.cfg.goal_radius, fill=False, color="gray", linestyle="--")
         ax.add_patch(circ)
@@ -558,13 +630,13 @@ def plot_trajectories_grid(
         axes[j].axis("off")
 
     plt.tight_layout()
-    fig.savefig(os.path.join(results_dir, "trajectories_grid_v2_nowind.png"))
+    fig.savefig(os.path.join(results_dir, "trajectories_grid_v2_wind_ssm.png"))
     plt.close(fig)
 
 
 @torch.no_grad()
-def plot_policy_on_one_trajectory(env: AdvRL2DEnvNoWind, model: ActorCritic, device: str = "cpu", results_dir: str = "."):
-    traj, obs_list, goal, success = run_episode_collect(env, model, device=device)
+def plot_policy_on_one_trajectory(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu", results_dir: str = "."):
+    traj, obs_list, winds, goal, success = run_episode_collect(env, model, device=device)
 
     # Policy vectors along trajectory
     Ux, Uy = [], []
@@ -585,6 +657,12 @@ def plot_policy_on_one_trajectory(env: AdvRL2DEnvNoWind, model: ActorCritic, dev
         color="blue", label="policy action (ax,ay)"
     )
 
+    plt.quiver(
+        traj[:-1, 0], traj[:-1, 1], winds[:, 0], winds[:, 1],
+        angles="xy", scale_units="xy", scale=1.0, width=0.003,
+        color="skyblue", alpha=0.6, label="wind force"
+    )
+
     plt.scatter(traj[0, 0], traj[0, 1], marker="s", s=100, label="start")
     plt.scatter(traj[-1, 0], traj[-1, 1], marker="X", s=100, label="end")
     plt.scatter(goal[0], goal[1], marker="*", s=200, color="gold", label="goal")
@@ -594,8 +672,8 @@ def plot_policy_on_one_trajectory(env: AdvRL2DEnvNoWind, model: ActorCritic, dev
     plt.gca().set_aspect("equal")
     plt.grid(True)
     plt.legend()
-    plt.title(f"Policy (NO WIND) | Success: {success}")
-    plt.savefig(os.path.join(results_dir, "policy_on_one_trajectory_v2_nowind.png"))
+    plt.title(f"Policy vs Wind (SSM env) | Success: {success}")
+    plt.savefig(os.path.join(results_dir, "policy_on_one_trajectory_v2_wind_ssm.png"))
     plt.close(fig)
 
 
@@ -605,36 +683,38 @@ def plot_policy_on_one_trajectory(env: AdvRL2DEnvNoWind, model: ActorCritic, dev
 
 def main():
     # No noise: deterministic measurement & transition
-    env_cfg = AdvRLEnvConfigNoWind(
+    env_cfg = AdvRLEnvConfig(
         obs_noise_std=0.0,
         proc_noise_std=0.0,
+        wind_epsilon=0.9,
+        wind_volatility=0.25,
         seed=2025,
         step_penalty=-1.0,
-        success_reward=25.0,
-        timeout_penalty=-25.0,
+        success_reward=3.0,
+        timeout_penalty=-5.0,
     )
-    env = AdvRL2DEnvNoWind(env_cfg)
+    env = AdvRL2DEnv(env_cfg)
 
-    ppo_cfg = PPOConfig(
+    ppo_cfg = PPOConfig(    
         total_steps=500_000,
         device="cpu",
         seed=2026,
     )
 
-    save_dir = os.path.join(_PROJECT_ROOT, "RL", "saved_models")
+    save_dir = os.path.join(_THIS_DIR, "outputs", "saved_models")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "AdvRL_v2_nowind_policy.pt")
+    save_path = os.path.join(save_dir, "AdvRL_v2_policy.pt")
 
-    print("Starting training of AdvRL_v2_nowind (SSM, 2D action, fixed std, sparse reward, no noise)...")
+    print("Starting training of AdvRL_v2 (SSM wind, 2D action, fixed std, sparse reward, no noise)...")
     model = train(env, ppo_cfg, model_path=save_path)
     torch.save(model.state_dict(), save_path)
 
-    results_dir = os.path.join(_PROJECT_ROOT, "RL", "results")
-    os.makedirs(results_dir, exist_ok=True)
+    figures_dir = os.path.join(_THIS_DIR, "outputs", "figures")
+    os.makedirs(figures_dir, exist_ok=True)
     print("Generating plots...")
-    plot_trajectories_grid(env, model, episodes=12, device=ppo_cfg.device, results_dir=results_dir)
-    plot_policy_on_one_trajectory(env, model, device=ppo_cfg.device, results_dir=results_dir)
-    print(f"Done. Results saved in {results_dir}")
+    plot_trajectories_grid(env, model, episodes=12, device=ppo_cfg.device, results_dir=figures_dir)
+    plot_policy_on_one_trajectory(env, model, device=ppo_cfg.device, results_dir=figures_dir)
+    print(f"Done. Figures saved in {figures_dir}")
 
 
 if __name__ == "__main__":

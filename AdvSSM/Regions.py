@@ -580,7 +580,12 @@ def main() -> None:
         mu_y=mu_y,        # (2,)
         Sigma_y=Sigma_y,  # (2,2)
         X_t=X_t,          # (n_x,2)
-        out_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "output/ellipses_t5.png"),
+        out_path=os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "outputs",
+            "figures",
+            "ellipses_t5.png",
+        ),
     )
 
     

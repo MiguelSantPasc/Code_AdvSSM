@@ -23,9 +23,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
 except ModuleNotFoundError:
-    from io_utils import cached_npz, data_path_for_plot
+    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
 
 
 # ============================================================
@@ -736,8 +736,7 @@ def main() -> None:
     m0 = x0.copy()
     P0 = 0.05 * np.eye(n_x)
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     outpath = os.path.join(out_dir, f"multi_epsilon_tangent_geometry_t{t}_T{T}_seed{seed}.png")
     data_path = data_path_for_plot(outpath)
 

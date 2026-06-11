@@ -23,9 +23,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from AdvSSM.io_utils import cached_npz
+    from AdvSSM.io_utils import cached_npz, data_dir_for, figures_dir_for
 except ModuleNotFoundError:
-    from io_utils import cached_npz
+    from io_utils import cached_npz, data_dir_for, figures_dir_for
 
 
 # ============================================================
@@ -1176,14 +1176,15 @@ def main() -> None:
     base_seed = 2026
     force_recompute = False
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    figures_dir = figures_dir_for(module_dir)
+    data_dir = data_dir_for(module_dir)
     outpath = os.path.join(
-        out_dir,
+        figures_dir,
         f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}.png"
     )
     cache_path = os.path.join(
-        out_dir,
+        data_dir,
         f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}_seed{base_seed}.npz"
     )
 

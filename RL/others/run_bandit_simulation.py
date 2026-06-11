@@ -532,8 +532,9 @@ def main():
     _, cum_clean = run_many_episodes_cumreward(clean_env_ctor, prior, n_episodes=2000, seed=0, delta=delta)
     _, cum_attack = run_many_episodes_cumreward(attacked_env_ctor, prior, n_episodes=2000, seed=0, delta=delta)
 
-    out_dir = Path(__file__).resolve().parent
-    out_path = out_dir.parent.parent / "results" / "bandit_attack_comparison.png"
+    out_dir = Path(__file__).resolve().parent / "outputs" / "figures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "bandit_attack_comparison.png"
 
     plot_top_two_traces_and_bottom_cumrewards(
         trace_clean=trace_clean,

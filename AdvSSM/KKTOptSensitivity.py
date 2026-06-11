@@ -29,9 +29,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
 except ModuleNotFoundError:
-    from io_utils import cached_npz, data_path_for_plot
+    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
 
 # -----------------------------
 # Utilities: PSD symmetrize + sqrt
@@ -726,7 +726,8 @@ def plot_two_panel(
     show: bool = True,
 ) -> str:
     if savepath is None:
-        savepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output/two_panel_ratio.png")
+        figures_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
+        savepath = os.path.join(figures_dir, "two_panel_ratio.png")
     """
     Figura con 2 paneles:
       Izq: ratio vs eps para t_selected
@@ -824,8 +825,8 @@ def main():
     force_recompute = False
 
     savepath = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "output/two_panel_ratio_eps_and_time.png",
+        figures_dir_for(os.path.dirname(os.path.abspath(__file__))),
+        "two_panel_ratio_eps_and_time.png",
     )
     data_path = data_path_for_plot(savepath)
 

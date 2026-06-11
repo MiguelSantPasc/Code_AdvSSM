@@ -49,7 +49,8 @@ N_MC_EST = 2000
 
 # Heatmap settings
 HEATMAP_BINS = 121
-OUTPUT_DIRNAME = "output"
+FIGURES_DIRNAME = os.path.join("outputs", "figures")
+DATA_DIRNAME = os.path.join("outputs", "data")
 
 
 # ============================================================
@@ -951,16 +952,19 @@ def plot_delta_density(
 # MAIN
 # ============================================================
 def main() -> None:
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), OUTPUT_DIRNAME)
-    os.makedirs(out_dir, exist_ok=True)
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    figures_dir = os.path.join(module_dir, FIGURES_DIRNAME)
+    data_dir = os.path.join(module_dir, DATA_DIRNAME)
+    os.makedirs(figures_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
 
     data_path = os.path.join(
-        out_dir,
+        data_dir,
         f"delta_y_points_N{N_RUNS}_T{T}_t{ATTACK_T}.npz",
     )
 
     density_path = os.path.join(
-        out_dir,
+        figures_dir,
         f"delta_y_density_N{N_RUNS}_T{T}_t{ATTACK_T}.png",
     )
 

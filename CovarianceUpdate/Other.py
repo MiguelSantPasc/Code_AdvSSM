@@ -246,7 +246,7 @@ def main() -> None:
     if t_attack != t_mod + 1:
         raise ValueError("This script is set up for t_attack = t_mod + 1.")
 
-    out_dir = os.path.join(CURRENT_DIR, "output")
+    out_dir = os.path.join(CURRENT_DIR, "outputs", "figures")
     os.makedirs(out_dir, exist_ok=True)
     outpath = os.path.join(
         out_dir,

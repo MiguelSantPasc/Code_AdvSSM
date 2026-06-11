@@ -899,7 +899,7 @@ def main() -> None:
     # =========================================================
     # Plot doubled "first-column" panels only
     # =========================================================
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "figures")
     os.makedirs(out_dir, exist_ok=True)
     outpath = os.path.join(out_dir, f"attack_overlay_onecol_t{t}_T{T}_seed{seed}.png")
 

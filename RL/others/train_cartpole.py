@@ -58,20 +58,20 @@ def evaluate_returns(model, env, n_episodes=200, seed=123):
 
 def main():
     # Project structure
-    experiments_dir = Path(__file__).resolve().parent
-    root_dir = experiments_dir.parent.parent
-    saved_models_dir = root_dir / "saved_models"
-    results_dir = root_dir / "results"
-    results_data_dir = results_dir / "cartpole_evaluation_data"
+    script_dir = Path(__file__).resolve().parent
+    outputs_dir = script_dir / "outputs"
+    saved_models_dir = outputs_dir / "saved_models"
+    figures_dir = outputs_dir / "figures"
+    results_data_dir = outputs_dir / "data" / "cartpole_evaluation_data"
 
     # Create directories if they don't exist
-    saved_models_dir.mkdir(exist_ok=True)
-    results_dir.mkdir(exist_ok=True)
-    results_data_dir.mkdir(exist_ok=True)
+    saved_models_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    results_data_dir.mkdir(parents=True, exist_ok=True)
 
     # Archivos de salida
     model_path = saved_models_dir / "dqn_cartpole_clean.zip"
-    fig_path = results_dir / "cartpole_returns_vs_noise.png"
+    fig_path = figures_dir / "cartpole_returns_vs_noise.png"
 
     # -------------------------
     # Entrenar (solo si NO existe el modelo)

@@ -31,12 +31,12 @@ CMAP = "viridis"
 
 # -------- Project imports --------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../.."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-MODEL_PATH = os.path.join(_PROJECT_ROOT, "RL", "saved_models", "AdvRL_v2_nowind_policy.pt")
-OUT_DIR = os.path.join(_PROJECT_ROOT, "RL", "results")
+MODEL_PATH = os.path.join(_THIS_DIR, "outputs", "saved_models", "AdvRL_v2_nowind_policy.pt")
+OUT_DIR = os.path.join(_THIS_DIR, "outputs", "figures")
 
 from AdvRL import ActorCritic  # type: ignore
 

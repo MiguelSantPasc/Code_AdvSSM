@@ -77,7 +77,7 @@ DEFAULT_ETA = 0.12
 DEFAULT_N_STEPS = 800
 DEFAULT_N_MC_OPT = 128
 DEFAULT_N_MC_EST = 2000
-OUTPUT_DIRNAME = "output"
+OUTPUT_DIRNAME = os.path.join("outputs", "figures")
 
 
 # ============================================================

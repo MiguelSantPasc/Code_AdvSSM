@@ -498,8 +498,8 @@ def main() -> None:
         m_filt=m_filt, P_filt=P_filt, m_pred=m_pred, P_pred=P_pred, A=A
     )
 
-    # --- Save plot into ./output/
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    # --- Save plot into ./outputs/figures/
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "figures")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"rts_smoother_T{T}_seed{seed}.png")
 

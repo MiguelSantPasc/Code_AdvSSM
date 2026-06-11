@@ -17,8 +17,8 @@ cached arrays saved next to each figure.
 #
 # HARD-CODED PATHS:
 #   - AdvRL_wind.py    : ./AdvRL_wind.py  (same folder as this script)
-#   - Model checkpoint : ../../saved_models/AdvRL_v2_policy.pt
-#   - Output figures   : ../../results/
+#   - Model checkpoint : ./outputs/saved_models/AdvRL_v2_policy.pt
+#   - Output figures   : ./outputs/figures/
 #
 # What it does:
 #   1) Plot 4 paired episodes (clean vs noisy obs) in one row:
@@ -58,7 +58,7 @@ RETURNS_SEED0 = 10_000
 # HARD-CODED PATHS (relative to this script)
 # -------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../.."))
 
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -66,8 +66,8 @@ if _PROJECT_ROOT not in sys.path:
 from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
-MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
-RESULTS_DIR = os.path.abspath(os.path.join(_THIS_DIR, "../../results"))
+MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+FIGURES_DIR = os.path.abspath(os.path.join(_THIS_DIR, "outputs", "figures"))
 
 
 # =========================
@@ -490,7 +490,7 @@ def main():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"Model not found at:\n  {MODEL_PATH}")
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(FIGURES_DIR, exist_ok=True)
 
     # ---- NORMAL IMPORT (no importlib) ----
     # Ensure the script directory is importable
@@ -529,7 +529,7 @@ def main():
 
     print(f"[load] Policy loaded from: {MODEL_PATH}")
     print(f"[cfg] DEVICE={DEVICE} | NOISE_STD={NOISE_STD}")
-    print(f"[out] RESULTS_DIR={RESULTS_DIR}")
+    print(f"[out] FIGURES_DIR={FIGURES_DIR}")
 
     plot_4eps_row_clean_vs_noisy(
         AdvRLEnvConfig=AdvRLEnvConfig,
@@ -540,7 +540,7 @@ def main():
         noise_std=NOISE_STD,
         seeds_4=SEEDS_4,
         device=DEVICE,
-        results_dir=RESULTS_DIR,
+        results_dir=FIGURES_DIR,
     )
 
     plot_accumulated_reward_clean_vs_noisy(
@@ -553,7 +553,7 @@ def main():
         n_episodes=N_RETURNS_EPISODES,
         seed0=RETURNS_SEED0,
         device=DEVICE,
-        results_dir=RESULTS_DIR,
+        results_dir=FIGURES_DIR,
     )
 
     print("[done] Evaluation finished.")

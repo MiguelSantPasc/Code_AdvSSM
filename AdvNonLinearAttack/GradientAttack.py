@@ -974,7 +974,7 @@ def main() -> None:
     epsilon = 10.991  # attack-region threshold in 2D
     force_recompute = False
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "figures")
     os.makedirs(out_dir, exist_ok=True)
     outpath = os.path.join(out_dir, f"attack_on_g_four_panels_t{t}_T{T}_seed{seed}.png")
     data_path = data_path_for_plot(outpath)
