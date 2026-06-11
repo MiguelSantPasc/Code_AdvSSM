@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-attack_on_g_lgssm.py
+GradientAttackNoGrad.py
 
-End-to-end ND LGSSM + leave-one-out attack region + white-box point attack on
-E[g(x_t) | y_t', y_-t] with projection onto the feasible attack region.
+End-to-end ND LGSSM + leave-one-out attack region + white-box gradient attack
+on E[g(x_t) | y_t', y_-t] with projection onto the feasible attack region.
 
 Key corrections / design choices:
 - Controls are indexed consistently with u[k].
@@ -15,6 +15,8 @@ Key corrections / design choices:
 - The attack optimizes y_t' inside the ellipsoid:
       (y_t' - mu_t)^T Sigma_t^{-1} (y_t' - mu_t) <= epsilon
   where p(y_t | y_-t) = N(mu_t, Sigma_t).
+- This version intentionally sets g_grad=None in the main experiment, so the
+  attack uses finite-difference Jacobians instead of an analytic gradient.
 
 Panels:
 (A) x1 over time (base vs adversarial)
@@ -28,6 +30,16 @@ from __future__ import annotations
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+
+try:
+    from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
+except ModuleNotFoundError:
+    import sys
+
+    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
+    from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 
 # ============================================================
@@ -955,6 +967,35 @@ def main() -> None:
     ], dtype=float)
     P0 = project_to_psd(P0)
 
+    t = T
+    epsilon = 5.991  # 95% chi-square threshold in 2D
+    force_recompute = False
+
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    os.makedirs(out_dir, exist_ok=True)
+    outpath = os.path.join(out_dir, f"attack_on_g_nograd_four_panels_t{t}_T{T}_seed{seed}.png")
+    data_path = data_path_for_plot(outpath)
+
+    if os.path.exists(data_path) and not force_recompute:
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        plot_attack_figure_four_panels(
+            t=int(data["t"]),
+            y_t=data["y_t"],
+            mu_t=data["mu_t"],
+            Sigma_t=data["Sigma_t"],
+            y_star=data["y_star"],
+            y_path=data["y_path"],
+            epsilon=float(data["epsilon"]),
+            x_true=data["x_true"],
+            m_smooth_base=data["m_smooth_base"], P_smooth_base=data["P_smooth_base"],
+            m_smooth_adv=data["m_smooth_adv"], P_smooth_adv=data["P_smooth_adv"],
+            obj_hist=data["obj_hist"],
+            outpath=outpath,
+        )
+        print(f"\nSaved figure to: {outpath}")
+        return
+
     dA = np.zeros_like(A0)
     dB = np.zeros_like(B0)
     dH = np.zeros_like(H0)
@@ -976,9 +1017,6 @@ def main() -> None:
     # --------------------------------------------------------
     # Attack setup
     # --------------------------------------------------------
-    t = T
-    epsilon = 5.991  # 95% chi-square threshold in 2D
-
     def sigmoid(z: float | np.ndarray) -> np.ndarray:
         z = np.asarray(z, dtype=float)
         return 1.0 / (1.0 + np.exp(-z))
@@ -1124,9 +1162,27 @@ def main() -> None:
     # --------------------------------------------------------
     # Save figure
     # --------------------------------------------------------
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(out_dir, f"attack_on_g_nograd_four_panels_t{t}_T{T}_seed{seed}.png")
+    save_npz(
+        data_path,
+        t=t,
+        T=T,
+        seed=seed,
+        epsilon=epsilon,
+        y_t=y_t,
+        mu_t=mu_t,
+        Sigma_t=Sigma_t,
+        y_star=y_star,
+        y_path=attack_hist["y_hist"],
+        obj_hist=attack_hist["obj_hist"],
+        x_true=x,
+        m_smooth_base=m_smooth_b,
+        P_smooth_base=P_smooth_b,
+        m_smooth_adv=m_smooth_a,
+        P_smooth_adv=P_smooth_a,
+        mu_g_base_t=mu_g_base_t,
+        mu_g_adv_t=mu_g_adv_t,
+    )
+    print(f"[cache] saved data: {data_path}")
 
     plot_attack_figure_four_panels(
         t=t,

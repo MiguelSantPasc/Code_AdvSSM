@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+"""
+Train and visualize the wind-driven 2D point-agent policy.
+
+The environment is written as an SSM-style control problem with augmented
+state x_t = [p_x, p_y, 1]^T:
+
+    x_{t+1} = A_t x_t + B a_t_aug + w_t
+    y_t     = F x_t + v_t
+
+where A_t injects wind through the homogeneous coordinate,
+
+    A_t = [[1, 0, epsilon cos(psi_t)],
+           [0, 1, epsilon sin(psi_t)],
+           [0, 0, 1]],
+
+and the policy observes z_t = [(goal - y_t) / goal_r_max, wind_x, wind_y].
+This file owns the environment, actor-critic model, PPO training loop, rollout
+collection, and basic trajectory/value plots for the wind case.
+"""
+
 # AdvRL_wind.py
 # RL experiment: 2D point agent with WIND dynamics formalized as an SSM.
 #

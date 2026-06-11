@@ -1,6 +1,27 @@
+"""
+Compare leave-one-out predictive regions in an ND linear Gaussian SSM.
+
+The model is:
+
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k)
+
+For a selected time t, the script builds two observation-space ellipses:
+
+    p(y_t | y_{0:t-1})       from the forward Kalman prediction only.
+    p(y_t | y_{-t})          from the forward prediction combined with the
+                              backward information message from future data.
+
+Plotting both ellipses makes the information contributed by future
+observations visible: the leave-one-out region generally contracts or rotates
+relative to the forward-only predictive region.
+"""
+
 from __future__ import annotations
+
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 def loo_values_nd(
     *,
@@ -374,15 +395,11 @@ def simulate_lgssm_nd(
     mats = {"A_t": A_t, "B_t": B_t, "H_t": H_t, "D_t": D_t, "Q_t": Q_t, "R_t": R_t}
     return x, y, u, mats
 
-
-import matplotlib.pyplot as plt
-
-
 def _ellipse_points_2d(center: np.ndarray, cov: np.ndarray, chi2_val: float = 5.991, n: int = 240) -> np.ndarray:
     """
     Return (n,2) points of the ellipse:
         (z-center)^T cov^{-1} (z-center) = chi2_val
-    For 95% in 2D: chi2_val ≈ 5.991.
+    For 95% in 2D: chi2_val is approximately 5.991.
     """
     center = np.asarray(center, dtype=float).reshape(2,)
     cov = np.asarray(cov, dtype=float).reshape(2, 2)

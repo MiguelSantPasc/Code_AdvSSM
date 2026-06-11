@@ -1,3 +1,16 @@
+"""
+Train or load a DQN CartPole policy and test observation-noise robustness.
+
+CartPole is not a Kalman-filter SSM experiment, but it plays the same role as a
+controlled observation-corruption baseline. The wrapper observes:
+
+    y_t = s_t + v_t,    v_t ~ N(0, diag(sigma^2)),
+
+where s_t is the Gymnasium CartPole state. The trained DQN action is evaluated
+on clean observations and on several noise levels, then the script saves the
+episode-return arrays and a return-vs-noise summary plot.
+"""
+
 import os
 from pathlib import Path
 

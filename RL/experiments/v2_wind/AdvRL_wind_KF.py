@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+Evaluate clean, noisy, and Kalman-filtered observations for the wind policy.
+
+The filter estimates the augmented position state x_t = [p_x, p_y, 1]^T under:
+
+    x_{t+1} = A_t x_t + B a_t + w_t
+    y_t     = F x_t + v_t
+
+with A_t determined by the known wind at the current step. The policy receives
+z_t = [(goal - p_hat_t) / goal_r_max, wind_x, wind_y], where p_hat_t is the
+filtered position estimate. This isolates whether KF smoothing of noisy
+position measurements helps the trained policy recover clean performance.
+"""
+
 # Eval_clean_noisy_kf.py
 #
 # HARD-CODED PATHS:
@@ -73,6 +87,12 @@ KF_INIT_VAR_SCALE = 1.0 # initial position variance = scale * R
 # HARD-CODED PATHS (relative to this script)
 # -------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
 MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
@@ -336,6 +356,31 @@ def plot_accumulated_reward_clean_noisy_kf(
       - noisy + KF
     """
     os.makedirs(results_dir, exist_ok=True)
+    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_noisy_kf.png")
+    data_path = data_path_for_plot(outpath)
+
+    if os.path.exists(data_path):
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        acc_clean = np.asarray(data["acc_clean"], dtype=float)
+        acc_noisy = np.asarray(data["acc_noisy"], dtype=float)
+        acc_kf = np.asarray(data["acc_kf"], dtype=float)
+
+        fig = plt.figure(figsize=(12, 5))
+        plt.plot(acc_clean, linewidth=1.8, label="clean")
+        plt.plot(acc_noisy, linewidth=1.8, label=f"noisy (sigma={noise_std})")
+        plt.plot(acc_kf, linewidth=1.8, label=f"noisy + KF (sigma={noise_std})")
+
+        plt.grid(True, alpha=0.25)
+        plt.xlabel("Episode")
+        plt.ylabel("Accumulated reward (cumulative sum)")
+        plt.title("Accumulated reward across episodes: clean vs noisy vs noisy+KF")
+        plt.legend()
+
+        fig.savefig(outpath, dpi=160, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[saved] {outpath}")
+        return
 
     acc_clean = []
     acc_noisy = []
@@ -394,7 +439,16 @@ def plot_accumulated_reward_clean_noisy_kf(
     plt.title("Accumulated reward across episodes: clean vs noisy vs noisy+KF")
     plt.legend()
 
-    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_noisy_kf.png")
+    save_npz(
+        data_path,
+        acc_clean=np.asarray(acc_clean, dtype=float),
+        acc_noisy=np.asarray(acc_noisy, dtype=float),
+        acc_kf=np.asarray(acc_kf, dtype=float),
+        noise_std=np.asarray(noise_std, dtype=float),
+        n_episodes=np.asarray(n_episodes, dtype=int),
+        seed0=np.asarray(seed0, dtype=int),
+    )
+    print(f"[cache] saved data: {data_path}")
     fig.savefig(outpath, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"[saved] {outpath}")

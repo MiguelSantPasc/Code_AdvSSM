@@ -25,6 +25,11 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+try:
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+except ModuleNotFoundError:
+    from io_utils import cached_npz, data_path_for_plot
+
 
 # ============================================================
 # PSD / linear algebra helpers
@@ -913,8 +918,16 @@ def plot_attack_figure_four_panels(
 def main() -> None:
     # ---- your setup
     n_x = n_y = n_u = 2
-    T = 25
+    T = 12
     seed = 2026
+    t = T
+    epsilon = 5.991  # typical 95% chi-square in 2D constraint
+    force_recompute = False
+
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    os.makedirs(out_dir, exist_ok=True)
+    outpath = os.path.join(out_dir, f"attack_four_panels_t{t}_T{T}_seed{seed}.png")
+    data_path = data_path_for_plot(outpath)
 
     # your matrices
     A0 = np.array([[0.65, 0.40],
@@ -948,84 +961,107 @@ def main() -> None:
     m0 = x0.copy()
     P0 = 0.05 * np.eye(n_x)
 
-    # ---- simulate
-    x, y, u, mats = simulate_lgssm_nd(
-        A0=A0, B0=B0, H0=H0, D0=D0,
-        T=T, seed=seed, x0=x0,
-        Q0=Q0, R0=R0,
-        dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
-        u_low=-0.5, u_high=0.5,
-    )
+    def compute_plot_data() -> dict[str, np.ndarray | float | int]:
+        # ---- simulate
+        x, y, u, mats = simulate_lgssm_nd(
+            A0=A0, B0=B0, H0=H0, D0=D0,
+            T=T, seed=seed, x0=x0,
+            Q0=Q0, R0=R0,
+            dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
+            u_low=-0.5, u_high=0.5,
+        )
 
-    # ---- fixed time
-    t = 5
+        # ---- compute X_t, mu_t, Sigma_t at time t
+        X_t, mu_t, Sigma_t = loo_values_nd(
+            t=t,
+            y=y, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            P0=P0, m0=m0,
+        )
+        y_t = y[t].copy()
 
-    # ---- compute X_t, mu_t, Sigma_t at time t
-    X_t, mu_t, Sigma_t = loo_values_nd(
-        t=t,
-        y=y, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        P0=P0, m0=m0,
-    )
-    y_t = y[t].copy()
+        # ---- KKT solve
+        y_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
+            X=X_t, y_t=y_t, mu=mu_t, Sigma=Sigma_t, epsilon=epsilon
+        )
 
-    # ---- KKT solve
-    epsilon = 5.991  # typical 95% chi-square in 2D constraint
-    y_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
-        X=X_t, y_t=y_t, mu=mu_t, Sigma=Sigma_t, epsilon=epsilon
-    )
+        # ---- RTS smoother on baseline y
+        m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
+            y=y, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            m0=m0, P0=P0
+        )
+        m_smooth_b, P_smooth_b = rts_smoother_nd(
+            m_filt=m_filt_b, P_filt=P_filt_b,
+            m_pred=m_pred_b, P_pred=P_pred_b,
+            A_t=mats["A_t"]
+        )
 
-    # sanity constraint check
-    Sinv = inv_psd(Sigma_t)
-    constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
+        # ---- RTS smoother on adversarial y': replace only y[t]
+        y_adv = y.copy()
+        y_adv[t] = y_star
+
+        m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
+            y=y_adv, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            m0=m0, P0=P0
+        )
+        m_smooth_a, P_smooth_a = rts_smoother_nd(
+            m_filt=m_filt_a, P_filt=P_filt_a,
+            m_pred=m_pred_a, P_pred=P_pred_a,
+            A_t=mats["A_t"]
+        )
+
+        Sinv = inv_psd(Sigma_t)
+        constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
+
+        return {
+            "t": t,
+            "T": T,
+            "seed": seed,
+            "epsilon": epsilon,
+            "x_true": x,
+            "y_t": y_t,
+            "mu_t": mu_t,
+            "Sigma_t": Sigma_t,
+            "X_t": X_t,
+            "y_star": y_star,
+            "obj_star": obj_star,
+            "constr_val": constr_val,
+            "m_smooth_base": m_smooth_b,
+            "P_smooth_base": P_smooth_b,
+            "m_smooth_adv": m_smooth_a,
+            "P_smooth_adv": P_smooth_a,
+        }
+
+    data = cached_npz(data_path, compute_plot_data, force=force_recompute)
+
+    t = int(data["t"])
+    epsilon = float(data["epsilon"])
+    y_t = data["y_t"]
+    mu_t = data["mu_t"]
+    Sigma_t = data["Sigma_t"]
+    X_t = data["X_t"]
+    y_star = data["y_star"]
+    obj_star = float(data["obj_star"])
+    constr_val = float(data["constr_val"])
+
     print(f"\n[t={t}] constraint value = {constr_val:.6f} (should be <= epsilon={epsilon})")
     print(f"[t={t}] objective value  = {obj_star:.6f}")
     print(f"[t={t}] o_t              = {y_t}")
     print(f"[t={t}] o_-t             = {mu_t}")
     print(f"[t={t}] o_t^{{adv}}      = {y_star}")
 
-    # ---- RTS smoother on baseline y
-    m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
-        y=y, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        m0=m0, P0=P0
-    )
-    m_smooth_b, P_smooth_b = rts_smoother_nd(
-        m_filt=m_filt_b, P_filt=P_filt_b,
-        m_pred=m_pred_b, P_pred=P_pred_b,
-        A_t=mats["A_t"]
-    )
-
-    # ---- RTS smoother on adversarial y': replace only y[t]
-    y_adv = y.copy()
-    y_adv[t] = y_star
-
-    m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
-        y=y_adv, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        m0=m0, P0=P0
-    )
-    m_smooth_a, P_smooth_a = rts_smoother_nd(
-        m_filt=m_filt_a, P_filt=P_filt_a,
-        m_pred=m_pred_a, P_pred=P_pred_a,
-        A_t=mats["A_t"]
-    )
-
-    # ---- figure
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(out_dir, f"attack_four_panels_t{t}_T{T}_seed{seed}.png")
-
     plot_attack_figure_four_panels(
         t=t,
         y_t=y_t, mu_t=mu_t, Sigma_t=Sigma_t, X_t=X_t,
         y_star=y_star, obj_star=obj_star, epsilon=epsilon,
-        x_true=x,
-        m_smooth_base=m_smooth_b, P_smooth_base=P_smooth_b,
-        m_smooth_adv=m_smooth_a, P_smooth_adv=P_smooth_a,
+        x_true=data["x_true"],
+        m_smooth_base=data["m_smooth_base"], P_smooth_base=data["P_smooth_base"],
+        m_smooth_adv=data["m_smooth_adv"], P_smooth_adv=data["P_smooth_adv"],
         outpath=outpath,
     )
     print(f"\nSaved figure to: {outpath}")

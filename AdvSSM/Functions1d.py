@@ -1,6 +1,24 @@
+"""
+One-dimensional leave-one-out helper for linear Gaussian SSM experiments.
+
+The scalar model is:
+
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k)
+
+For a requested index t, this module computes:
+
+    X_t          : sensitivity of the RTS-smoothed state to perturbing y_t.
+    mu_{t|-t}    : E[y_t | y_{-t}], the leave-one-out predictive mean.
+    Sigma_{t|-t}: Var[y_t | y_{-t}], the leave-one-out predictive variance.
+
+The calculation uses standard Kalman covariance recursions, RTS gains J_k, and
+a backward information message beta_k(x_k) that skips the likelihood term at
+the removed observation y_t.
+"""
+
 from __future__ import annotations
 
-from typing import Any
 import numpy as np
 
 

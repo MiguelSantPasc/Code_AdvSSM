@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+Plot matched clean, noisy+KF, and adversarial+KF trajectories for one episode.
+
+The adversarial measurement model is the same as AdvRL_wind_AttackSSM.py:
+
+    x_{t+1} = x_t + a_t + wind_t + q_t
+    y_t     = x_t + r_t
+
+An attacked observation y_t' is projected into the ellipsoid
+(y_t' - mu_t)^T Sigma_t^{-1} (y_t' - mu_t) <= epsilon before the KF update.
+The figure overlays true positions, perceived or filtered positions, and action
+arrows so that the geometric effect of corrupted measurements is visible.
+"""
+
 # Plot_three_paths_clean_noisyKF_attackKF.py
 #
 # Plots in ONE figure the 3 trajectories:
@@ -67,6 +81,12 @@ OBS_ALPHA = 0.90
 # PATHS
 # ------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
 MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
@@ -944,6 +964,31 @@ def main():
         raise FileNotFoundError(f"Model not found at:\n  {MODEL_PATH}")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    outpath = os.path.join(RESULTS_DIR, "three_paths_clean_noisyKF_attackKF.png")
+    data_path = data_path_for_plot(outpath)
+
+    if os.path.exists(data_path):
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        clean_data = data["clean_data"].item()
+        noisy_kf_data = data["noisy_kf_data"].item()
+        attack_kf_data = data["attack_kf_data"].item()
+
+        plot_three_rollouts_same_axes(
+            clean_data=clean_data,
+            noisy_kf_data=noisy_kf_data,
+            attack_kf_data=attack_kf_data,
+            outpath=outpath,
+            goal_radius=float(data["goal_radius"]),
+            arrow_every=ARROW_EVERY,
+        )
+        print(
+            f"[summary] clean ret={clean_data['return']:.1f} | "
+            f"noisy+KF ret={noisy_kf_data['return']:.1f} | "
+            f"attack+KF ret={attack_kf_data['return']:.1f}"
+        )
+        print("[done] Plot finished.")
+        return
 
     if _THIS_DIR not in sys.path:
         sys.path.insert(0, _THIS_DIR)
@@ -1024,7 +1069,24 @@ def main():
         device=DEVICE,
     )
 
-    outpath = os.path.join(RESULTS_DIR, "three_paths_clean_noisyKF_attackKF.png")
+    save_npz(
+        data_path,
+        clean_data=np.asarray(clean_data, dtype=object),
+        noisy_kf_data=np.asarray(noisy_kf_data, dtype=object),
+        attack_kf_data=np.asarray(attack_kf_data, dtype=object),
+        goal_radius=np.asarray(float(cfg_clean.goal_radius), dtype=float),
+        plot_seed=np.asarray(PLOT_SEED, dtype=int),
+        noise_std=np.asarray(NOISE_STD, dtype=float),
+        attack_std=np.asarray(ATTACK_STD, dtype=float),
+        attack_eps=np.asarray(ATTACK_EPS, dtype=float),
+        attack_prob=np.asarray(ATTACK_PROB, dtype=float),
+        kf_meas_std=np.asarray(KF_MEAS_STD, dtype=float),
+        kf_proc_std=np.asarray(KF_PROC_STD, dtype=float),
+        pgd_steps=np.asarray(PGD_STEPS, dtype=int),
+        pgd_step_size=np.asarray(PGD_STEP_SIZE, dtype=float),
+        mc_samples=np.asarray(MC_SAMPLES, dtype=int),
+    )
+    print(f"[cache] saved data: {data_path}")
 
     plot_three_rollouts_same_axes(
         clean_data=clean_data,

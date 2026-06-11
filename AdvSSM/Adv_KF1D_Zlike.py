@@ -30,16 +30,19 @@ Conventions in 1D:
 
 from __future__ import annotations
 
+# Clean notation for the coefficient above:
+#   value(t) = sum_{i=0}^{T-t} [
+#       (prod_{j=0}^{i-1} J_{t+j})
+#       (1 - J_{t+i} A_{t+i+1})
+#       (left-prod_{j=0}^{i} (1 - K_{t+j} H_{t+j}) A_{t+j})
+#   ] K_t,
+# with J_T = 0 in the scalar boundary case.
+
 import os
+from typing import Any
+
 import numpy as np
 import matplotlib.pyplot as plt
-
-import numpy as np
-from typing import Any
-
-
-import numpy as np
-from typing import Any
 
 
 def loo_messages_1d_infoform(

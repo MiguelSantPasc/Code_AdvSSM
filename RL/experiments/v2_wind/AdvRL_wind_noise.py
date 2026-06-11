@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+Evaluate the trained wind policy under clean versus noisy position observations.
+
+The latent position follows the same wind SSM as AdvRL_wind.py. This script
+keeps the wind and goal random streams paired across methods, then compares:
+
+    clean: z_t = [(goal - y_t) / goal_r_max, wind_t]
+    noisy: y_t = p_t + v_t,   v_t ~ N(0, sigma^2 I)
+
+Only the measured position is corrupted; wind remains known to the policy.
+The outputs are paired trajectory panels and accumulated-return curves, with
+cached arrays saved next to each figure.
+"""
+
 # Eval_clean_vs_noisy.py
 #
 # HARD-CODED PATHS:
@@ -44,6 +58,12 @@ RETURNS_SEED0 = 10_000
 # HARD-CODED PATHS (relative to this script)
 # -------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
 MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
@@ -79,6 +99,65 @@ def make_env_with_separate_obs_rng(AdvRL2DEnv_base):
 # =========================
 # Rollout + plots
 # =========================
+
+def _plot_cached_clean_vs_noisy_trajs(data: dict, *, noise_std: float, outpath: str) -> None:
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+
+    for i, seed in enumerate(np.asarray(data["seeds"], dtype=int)):
+        ax = axes[i]
+        traj_c = np.asarray(data["trajs_clean"][i], dtype=np.float32)
+        traj_n = np.asarray(data["trajs_noisy"][i], dtype=np.float32)
+        winds_c = np.asarray(data["winds_clean"][i], dtype=np.float32)
+        winds_n = np.asarray(data["winds_noisy"][i], dtype=np.float32)
+        goal = np.asarray(data["goals"][i], dtype=np.float32)
+        ret_c = float(data["returns_clean"][i])
+        ret_n = float(data["returns_noisy"][i])
+        succ_c = bool(data["success_clean"][i])
+        succ_n = bool(data["success_noisy"][i])
+
+        ax.plot(traj_c[:, 0], traj_c[:, 1], marker="o", markersize=2, linewidth=1, alpha=0.85, label="clean")
+        ax.plot(traj_n[:, 0], traj_n[:, 1], marker="o", markersize=2, linewidth=1, alpha=0.85, label=f"noisy sigma={noise_std}")
+
+        ax.scatter(0.0, 0.0, marker="s", s=70, label="start")
+        ax.scatter(goal[0], goal[1], marker="*", s=180, label="goal")
+
+        step = 2
+        if len(winds_c) > 0:
+            ax.quiver(
+                traj_c[:-1:step, 0], traj_c[:-1:step, 1],
+                winds_c[::step, 0], winds_c[::step, 1],
+                alpha=0.35, width=0.004
+            )
+        if len(winds_n) > 0:
+            ax.quiver(
+                traj_n[:-1:step, 0], traj_n[:-1:step, 1],
+                winds_n[::step, 0], winds_n[::step, 1],
+                alpha=0.20, width=0.004
+            )
+
+        circ = plt.Circle(
+            (goal[0], goal[1]),
+            float(data["goal_radius"]),
+            fill=False,
+            linestyle="--",
+            alpha=0.6,
+        )
+        ax.add_patch(circ)
+
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.25)
+        ax.set_title(
+            f"Ep {i+1} (seed={seed})\n"
+            f"clean: {'OK' if succ_c else 'FAIL'} ret={ret_c:.0f} | "
+            f"noisy: {'OK' if succ_n else 'FAIL'} ret={ret_n:.0f}"
+        )
+
+        if i == 0:
+            ax.legend(loc="best", fontsize=10)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=160)
+    plt.close(fig)
 
 @torch.no_grad()
 def rollout_episode(env, model, device: str = "cpu"):
@@ -144,6 +223,25 @@ def plot_4eps_row_clean_vs_noisy(
     if len(seeds_4) != 4:
         raise ValueError("SEEDS_4 must have exactly 4 seeds")
 
+    outpath = os.path.join(results_dir, "eval_trajs_4eps_clean_vs_noisy.png")
+    data_path = data_path_for_plot(outpath)
+    if os.path.exists(data_path):
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        _plot_cached_clean_vs_noisy_trajs(data, noise_std=noise_std, outpath=outpath)
+        print(f"[saved] {outpath}")
+        return
+
+    trajs_clean = []
+    trajs_noisy = []
+    winds_clean = []
+    winds_noisy = []
+    goals = []
+    returns_clean = []
+    returns_noisy = []
+    success_clean = []
+    success_noisy = []
+
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
 
     for i, seed in enumerate(seeds_4):
@@ -165,6 +263,15 @@ def plot_4eps_row_clean_vs_noisy(
         traj_n, winds_n, ret_n, succ_n, _goal_n = rollout_episode(env_noisy, model, device=device)
 
         goal = goal_c
+        trajs_clean.append(traj_c)
+        trajs_noisy.append(traj_n)
+        winds_clean.append(winds_c)
+        winds_noisy.append(winds_n)
+        goals.append(goal_c)
+        returns_clean.append(ret_c)
+        returns_noisy.append(ret_n)
+        success_clean.append(succ_c)
+        success_noisy.append(succ_n)
 
         ax.plot(traj_c[:, 0], traj_c[:, 1], marker="o", markersize=2, linewidth=1, alpha=0.85, label="clean")
         ax.plot(traj_n[:, 0], traj_n[:, 1], marker="o", markersize=2, linewidth=1, alpha=0.85, label=f"noisy σ={noise_std}")
@@ -201,7 +308,22 @@ def plot_4eps_row_clean_vs_noisy(
             ax.legend(loc="best", fontsize=10)
 
     plt.tight_layout()
-    outpath = os.path.join(results_dir, "eval_trajs_4eps_clean_vs_noisy.png")
+    save_npz(
+        data_path,
+        seeds=np.asarray(seeds_4, dtype=int),
+        noise_std=np.asarray(noise_std, dtype=float),
+        goal_radius=np.asarray(base_cfg.goal_radius, dtype=float),
+        trajs_clean=np.asarray(trajs_clean, dtype=object),
+        trajs_noisy=np.asarray(trajs_noisy, dtype=object),
+        winds_clean=np.asarray(winds_clean, dtype=object),
+        winds_noisy=np.asarray(winds_noisy, dtype=object),
+        goals=np.asarray(goals, dtype=object),
+        returns_clean=np.asarray(returns_clean, dtype=float),
+        returns_noisy=np.asarray(returns_noisy, dtype=float),
+        success_clean=np.asarray(success_clean, dtype=bool),
+        success_noisy=np.asarray(success_noisy, dtype=bool),
+    )
+    print(f"[cache] saved data: {data_path}")
     fig.savefig(outpath, dpi=160)
     plt.close(fig)
     print(f"[saved] {outpath}")
@@ -281,6 +403,28 @@ def plot_accumulated_reward_clean_vs_noisy(
     Saves: eval_accumulated_reward_clean_vs_noisy.png
     """
     os.makedirs(results_dir, exist_ok=True)
+    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_vs_noisy.png")
+    data_path = data_path_for_plot(outpath)
+
+    if os.path.exists(data_path):
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        acc_clean = np.asarray(data["acc_clean"], dtype=float)
+        acc_noisy = np.asarray(data["acc_noisy"], dtype=float)
+
+        fig = plt.figure(figsize=(12, 5))
+        plt.plot(acc_clean, linewidth=1.5, label="clean (sigma=0) accumulated")
+        plt.plot(acc_noisy, linewidth=1.5, label=f"noisy (sigma={noise_std}) accumulated")
+        plt.grid(True, alpha=0.25)
+        plt.xlabel("Episode")
+        plt.ylabel("Accumulated reward (cumulative sum)")
+        plt.title("Accumulated reward across episodes: clean vs noisy observation")
+        plt.legend()
+
+        fig.savefig(outpath, dpi=160)
+        plt.close(fig)
+        print(f"[saved] {outpath}")
+        return
 
     acc_clean = []
     acc_noisy = []
@@ -321,7 +465,15 @@ def plot_accumulated_reward_clean_vs_noisy(
     plt.title("Accumulated reward across episodes: clean vs noisy observation")
     plt.legend()
 
-    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_vs_noisy.png")
+    save_npz(
+        data_path,
+        acc_clean=np.asarray(acc_clean, dtype=float),
+        acc_noisy=np.asarray(acc_noisy, dtype=float),
+        noise_std=np.asarray(noise_std, dtype=float),
+        n_episodes=np.asarray(n_episodes, dtype=int),
+        seed0=np.asarray(seed0, dtype=int),
+    )
+    print(f"[cache] saved data: {data_path}")
     fig.savefig(outpath, dpi=160)
     plt.close(fig)
     print(f"[saved] {outpath}")

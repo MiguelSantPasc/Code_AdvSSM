@@ -1,3 +1,16 @@
+"""
+Visualize level sets of a difference of two quadratic forms.
+
+For p = [x, y]^T, the plotted function is:
+
+    f(p) = (p - a)^T A^T A (p - a)
+           - beta (p - b)^T Sigma^{-1} (p - b).
+
+The 4x3 panel sweeps beta over logarithmically spaced values, which helps show
+how the objective geometry changes as the ellipsoidal penalty around b becomes
+more or less important.
+"""
+
 # plot_levels_12_betas_4x3.py
 import numpy as np
 import matplotlib.pyplot as plt

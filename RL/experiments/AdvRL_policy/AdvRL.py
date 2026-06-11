@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+Train and visualize the no-wind 2D point-agent policy.
+
+The environment is an SSM-style control problem with augmented state
+x_t = [p_x, p_y, 1]^T:
+
+    x_{t+1} = I x_t + B a_t_aug + w_t
+    y_t     = F x_t + v_t
+
+The policy receives only z_t = (goal - y_t) / goal_r_max. This older no-wind
+experiment provides the baseline actor-critic/PPO code that the wind experiment
+extends by adding wind components to the observation.
+"""
+
 # AdvRL_v2_nowind.py
 # RL experiment: 2D point agent, NO WIND, SSM-style environment.
 #

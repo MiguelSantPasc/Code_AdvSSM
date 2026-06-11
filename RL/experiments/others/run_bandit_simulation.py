@@ -1,5 +1,19 @@
 """
-Gaussian Sign POMDP + Bayesian belief + plots
+Gaussian sign POMDP with Bayesian belief updates and attack plots.
+
+The hidden bandit mean mu is fixed during one episode. At each step:
+
+    y_k | mu, sigma^2 ~ N(mu, sigma^2)
+
+and the agent chooses among negative, abstain/continue, and positive actions.
+The belief uses the normal-inverse-gamma conjugate prior:
+
+    sigma^2 ~ InvGamma(alpha, beta)
+    mu | sigma^2 ~ N(mu_0, sigma^2 / kappa).
+
+The attack wrapper perturbs observations before the Bayesian update, allowing
+the plots to compare clean versus attacked posterior means, credible intervals,
+and cumulative rewards.
 
 TOP subplot (ONE episode, fixed mu_b = 0.075):
   - plots BOTH clean and attacked observation streams on the same axes:

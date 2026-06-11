@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 from scipy.stats import gaussian_kde
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -40,7 +41,7 @@ EPSILON = 7.814727903251179
 M_STAR = np.array([1.00], dtype=float)
 
 # Optimization settings
-ETA = 0.05
+ETA = 1.5
 N_STEPS = 800
 N_MC_OPT = 128
 N_MC_EST = 2000
@@ -932,7 +933,7 @@ def plot_delta_density_pairwise(
         delta_y = y_T' - y_T
 
     Creates a 1x3 figure with panels:
-        (Δy1, Δy2), (Δy1, Δy3), (Δy2, Δy3)
+        (Δo1, Δo2), (Δo1, Δo3), (Δo2, Δo3)
 
     deltas: shape (N, 3)
     """
@@ -942,9 +943,9 @@ def plot_delta_density_pairwise(
         raise ValueError("deltas must have shape (N, 3)")
 
     pairs = [
-        (0, 1, r"$\Delta y_1$", r"$\Delta y_2$"),
-        (0, 2, r"$\Delta y_1$", r"$\Delta y_3$"),
-        (1, 2, r"$\Delta y_2$", r"$\Delta y_3$"),
+        (0, 1, r"$\Delta o_1$", r"$\Delta o_2$"),
+        (0, 2, r"$\Delta o_1$", r"$\Delta o_3$"),
+        (1, 2, r"$\Delta o_2$", r"$\Delta o_3$"),
     ]
 
     # common symmetric axis limit across all coordinates
@@ -976,7 +977,7 @@ def plot_delta_density_pairwise(
             Z,
             origin="lower",
             extent=[-lim, lim, -lim, lim],
-            cmap="viridis",
+            cmap="cividis",
             aspect="equal",
         )
         last_im = im
@@ -995,9 +996,9 @@ def plot_delta_density_pairwise(
         ax.set_ylabel(ylabel)
         ax.grid(alpha=0.12)
 
-    axes[0].set_title(r"Density of $(\Delta y_1, \Delta y_2)$")
-    axes[1].set_title(r"Density of $(\Delta y_1, \Delta y_3)$")
-    axes[2].set_title(r"Density of $(\Delta y_2, \Delta y_3)$")
+    axes[0].set_title(r"Density of $(\Delta o_1, \Delta o_2)$")
+    axes[1].set_title(r"Density of $(\Delta o_1, \Delta o_3)$")
+    axes[2].set_title(r"Density of $(\Delta o_2, \Delta o_3)$")
 
     cbar = fig.colorbar(last_im, ax=axes, shrink=0.90, pad=0.02)
     cbar.set_label("density")
@@ -1009,6 +1010,372 @@ def plot_delta_density_pairwise(
     fig.savefig(outpath, dpi=300, facecolor="white")
     plt.close(fig)
 
+
+def plot_delta_density_3d(
+    deltas: np.ndarray,
+    outpath: str,
+    scatter_size: float = 30.0,
+) -> None:
+    """
+    Single 3D scatter of attack displacements with 2D KDE density maps
+    projected onto the coordinate planes.
+
+    The 3D axes/box are hidden. Only the density projections and their
+    plane axes are shown.
+
+    Projections:
+        (Δo1, Δo2) density map on z = -lim
+        (Δo1, Δo3) density map on y = -lim
+        (Δo2, Δo3) density map on x = -lim
+
+    deltas: shape (N, 3)
+    """
+    deltas = np.asarray(deltas, dtype=float)
+
+    if deltas.ndim != 2 or deltas.shape[1] != 3:
+        raise ValueError("deltas must have shape (N, 3)")
+
+    x0 = deltas[:, 0]
+    y0 = deltas[:, 1]
+    z0 = deltas[:, 2]
+
+    # ============================================================
+    # 3D density for coloring the point cloud
+    # ============================================================
+    values_3d = np.vstack([x0, y0, z0])
+    density0 = gaussian_kde(values_3d)(values_3d)
+
+    order = np.argsort(density0)
+    x = x0[order]
+    y = y0[order]
+    z = z0[order]
+    density = density0[order]
+
+    max_abs = max(
+        np.max(np.abs(x0)),
+        np.max(np.abs(y0)),
+        np.max(np.abs(z0)),
+        1e-3,
+    )
+    lim = 1.10 * max_abs
+
+    density_lo, density_hi = np.percentile(density, [5.0, 95.0])
+    if density_hi <= density_lo:
+        density_lo = float(np.min(density))
+        density_hi = float(np.max(density))
+    if density_hi <= density_lo:
+        density_hi = density_lo + 1e-12
+
+    density_norm = Normalize(vmin=density_lo, vmax=density_hi, clip=True)
+
+    # ============================================================
+    # Helper: projected 2D KDE on a coordinate pair
+    # ============================================================
+    def build_pairwise_kde(
+        a: np.ndarray,
+        b: np.ndarray,
+        grid_size: int = 160,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ai = np.linspace(-lim, lim, grid_size)
+        bi = np.linspace(-lim, lim, grid_size)
+
+        AA, BB = np.meshgrid(ai, bi)
+
+        values_2d = np.vstack([a, b])
+        kde = gaussian_kde(values_2d)
+
+        DD = kde(np.vstack([AA.ravel(), BB.ravel()])).reshape(AA.shape)
+
+        return AA, BB, DD
+
+    # These are real 2D projected density maps.
+    X_xy, Y_xy, D_xy = build_pairwise_kde(x0, y0)  # density of (x, y)
+    X_xz, Z_xz, D_xz = build_pairwise_kde(x0, z0)  # density of (x, z)
+    Y_yz, Z_yz, D_yz = build_pairwise_kde(y0, z0)  # density of (y, z)
+
+    # Common normalization for the three projected density maps.
+    proj_density_lo = min(
+        np.percentile(D_xy, 5.0),
+        np.percentile(D_xz, 5.0),
+        np.percentile(D_yz, 5.0),
+    )
+    proj_density_hi = max(
+        np.percentile(D_xy, 98.0),
+        np.percentile(D_xz, 98.0),
+        np.percentile(D_yz, 98.0),
+    )
+
+    if proj_density_hi <= proj_density_lo:
+        proj_density_hi = proj_density_lo + 1e-12
+
+    proj_norm = Normalize(vmin=proj_density_lo, vmax=proj_density_hi, clip=True)
+    cmap = plt.get_cmap("cividis")
+
+    # ============================================================
+    # Figure
+    # ============================================================
+    fig = plt.figure(figsize=(10.2, 8.2), constrained_layout=True)
+    ax = fig.add_subplot(111, projection="3d")
+
+    # ============================================================
+    # Projected density maps as real colored planes
+    # ============================================================
+
+    # ------------------------------------------------------------
+    # Projection 1: density of (Δo1, Δo2) on plane z = -lim
+    # ------------------------------------------------------------
+    Z_plane_xy = -lim * np.ones_like(X_xy)
+
+    ax.plot_surface(
+        X_xy,
+        Y_xy,
+        Z_plane_xy,
+        rstride=1,
+        cstride=1,
+        facecolors=cmap(proj_norm(D_xy)),
+        shade=False,
+        alpha=0.58,
+        linewidth=0,
+        antialiased=False,
+    )
+
+    # ------------------------------------------------------------
+    # Projection 2: density of (Δo1, Δo3) on plane y = -lim
+    # ------------------------------------------------------------
+    Y_plane_xz = -lim * np.ones_like(X_xz)
+
+    ax.plot_surface(
+        X_xz,
+        Y_plane_xz,
+        Z_xz,
+        rstride=1,
+        cstride=1,
+        facecolors=cmap(proj_norm(D_xz)),
+        shade=False,
+        alpha=0.58,
+        linewidth=0,
+        antialiased=False,
+    )
+
+    # ------------------------------------------------------------
+    # Projection 3: density of (Δo2, Δo3) on plane x = -lim
+    # ------------------------------------------------------------
+    X_plane_yz = -lim * np.ones_like(Y_yz)
+
+    ax.plot_surface(
+        X_plane_yz,
+        Y_yz,
+        Z_yz,
+        rstride=1,
+        cstride=1,
+        facecolors=cmap(proj_norm(D_yz)),
+        shade=False,
+        alpha=0.58,
+        linewidth=0,
+        antialiased=False,
+    )
+
+
+    # ============================================================
+    # Axes only on the projection planes
+    # ============================================================
+
+    axis_lw = 1.35
+    axis_alpha = 0.98
+
+    # Axes on xy plane: z = -lim
+    ax.plot(
+        [-lim, lim],
+        [0.0, 0.0],
+        [-lim, -lim],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+    ax.plot(
+        [0.0, 0.0],
+        [-lim, lim],
+        [-lim, -lim],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+
+    # Axes on xz plane: y = -lim
+    ax.plot(
+        [-lim, lim],
+        [-lim, -lim],
+        [0.0, 0.0],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+    ax.plot(
+        [0.0, 0.0],
+        [-lim, -lim],
+        [-lim, lim],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+
+    # Axes on yz plane: x = -lim
+    ax.plot(
+        [-lim, -lim],
+        [-lim, lim],
+        [0.0, 0.0],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+    ax.plot(
+        [-lim, -lim],
+        [0.0, 0.0],
+        [-lim, lim],
+        color="black",
+        linewidth=axis_lw,
+        alpha=axis_alpha,
+    )
+
+    # ============================================================
+    # Labels on projection-plane axes
+    # ============================================================
+
+    label_fs = 11
+
+    # xy projection labels
+    ax.text(
+        lim,
+        0.0,
+        -lim - 0.25,
+        r"$\Delta o_1$",
+        fontsize=label_fs,
+        ha="left",
+        va="center",
+    )
+    ax.text(
+        0.0,
+        lim,
+        -lim - 0.25,
+        r"$\Delta o_2$",
+        fontsize=label_fs,
+        ha="center",
+        va="bottom",
+    )
+
+    # xz projection labels
+    ax.text(
+        lim,
+        -lim - 0.25,
+        0.0,
+        r"$\Delta o_1$",
+        fontsize=label_fs,
+        ha="left",
+        va="center",
+    )
+    ax.text(
+        0.0,
+        -lim - 0.25,
+        lim,
+        r"$\Delta o_3$",
+        fontsize=label_fs,
+        ha="center",
+        va="bottom",
+    )
+
+    # yz projection labels
+    ax.text(
+        -lim - 0.25,
+        lim ,
+        0.0,
+        r"$\Delta o_2$",
+        fontsize=label_fs,
+        ha="left",
+        va="center",
+    )
+    ax.text(
+        -lim - 0.25,
+        0.0,
+        lim,
+        r"$\Delta o_3$",
+        fontsize=label_fs,
+        ha="center",
+        va="bottom",
+    )
+
+    # ============================================================
+    # Main 3D displacement cloud
+    # ============================================================
+
+    scatter = ax.scatter(
+        x,
+        y,
+        z,
+        c=density,
+        cmap="cividis",
+        norm=density_norm,
+        s=scatter_size,
+        alpha=0.92,
+        edgecolors="black",
+        linewidths=0.25,
+        marker="o",
+        depthshade=True,
+    )
+
+    # Origin marker
+    ax.scatter(
+        [0.0],
+        [0.0],
+        [0.0],
+        marker="x",
+        s=95,
+        linewidths=2.0,
+        color="crimson",
+        depthshade=False,
+    )
+
+    # ============================================================
+    # Limits and camera
+    # ============================================================
+
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_zlim(-lim, lim)
+    ax.set_box_aspect((1.0, 1.0, 1.0))
+
+    ax.view_init(elev=24, azim=36)
+
+    # ============================================================
+    # Hide default 3D axes, ticks, grid and panes
+    # ============================================================
+
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_zlabel("")
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_zticks([])
+
+    ax.grid(False)
+
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.line.set_color((1.0, 1.0, 1.0, 0.0))
+        axis.pane.set_facecolor((1.0, 1.0, 1.0, 0.0))
+        axis.pane.set_edgecolor((1.0, 1.0, 1.0, 0.0))
+
+    ax.set_axis_off()
+
+    # Colorbar for the 3D point cloud
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.78, pad=0.06)
+    cbar.set_label("KDE density of attack perturbations")
+
+    out_dir = os.path.dirname(outpath)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    fig.savefig(outpath, dpi=300, facecolor="white")
+    plt.close(fig) 
 
 # ============================================================
 # Main
@@ -1033,7 +1400,7 @@ def main() -> None:
         data = np.load(data_path)
         deltas = data["deltas"]
 
-        plot_delta_density_pairwise(
+        plot_delta_density_3d(
             deltas=deltas,
             outpath=density_path,
         )
@@ -1068,7 +1435,7 @@ def main() -> None:
         axis=0,
     )
 
-    plot_delta_density_pairwise(
+    plot_delta_density_3d(
         deltas=deltas,
         outpath=density_path,
     )

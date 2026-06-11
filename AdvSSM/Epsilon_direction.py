@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
 """
-KKTOpt_multi_epsilon_tangent.py
+Observation-space geometry for multiple epsilon values in a linear Gaussian
+state-space model.
 
-Single geometry plot in observation space for multiple epsilon values:
-- constraint ellipses superposed (NOT filled)
-- objective level-set ellipses superposed (NOT filled)
-- tangent points y*(epsilon) clearly shown
-- soft / muted colors
-- output saved into ./output/
+Notation used throughout this file:
+    s_t      : hidden state
+    o_t      : observation
+    \hat{o}_t: predicted / leave-one-out observation used as the reference point
+
+The figure shows, for several epsilon values:
+- constraint ellipses centred at \hat{o}_t
+- objective level-set ellipses built from directions relative to \hat{o}_t
+- tangent points o^*(epsilon)
+- a direction arrow that starts at the predicted observation, not at o_t
 """
 
 from __future__ import annotations
 
 import os
-import os
-import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
 import matplotlib.pyplot as plt
+
+try:
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+except ModuleNotFoundError:
+    from io_utils import cached_npz, data_path_for_plot
 
 
 # ============================================================
@@ -71,6 +78,14 @@ def simulate_lgssm_nd(
     u_low: float = -0.5,
     u_high: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """
+    Simulate a multidimensional LGSSM using the notation
+
+        s_{t+1} = A_t s_t + B_t u_t + w_{t+1}
+        o_t     = H_t s_t + D_t u_t + v_t
+
+    even though the internal arrays keep the conventional `x` and `y` names.
+    """
     if T < 0:
         raise ValueError("T must be >= 0")
 
@@ -149,7 +164,7 @@ def simulate_lgssm_nd(
 
 
 # ============================================================
-# Leave-one-out p(y_t | y_-t) + X_t
+# Leave-one-out p(o_t | o_-t) + X_t
 # ============================================================
 def loo_values_nd(
     *,
@@ -165,6 +180,13 @@ def loo_values_nd(
     P0: np.ndarray,
     m0: np.ndarray,
 ) -> list[np.ndarray]:
+    """
+    Compute:
+    - X_t: sensitivity from an observation-space perturbation at time t to the
+      corresponding smoothed hidden-state perturbation,
+    - \hat{o}_t = E[o_t | o_{-t}],
+    - Sigma_t = Cov[o_t | o_{-t}].
+    """
     T = int(y.shape[0] - 1)
     if not (0 <= t <= T):
         raise ValueError("t out of range")
@@ -243,11 +265,11 @@ def loo_values_nd(
             Rk = project_to_psd(R_t[k])
             uk = u_at(k)
 
-            y_hat = Hk @ m_pred[k] + Dk @ uk
+            o_hat = Hk @ m_pred[k] + Dk @ uk
             S = Hk @ P_pred[k] @ Hk.T + Rk
             K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
 
-            m_filt[k] = m_pred[k] + K @ (y[k] - y_hat)
+            m_filt[k] = m_pred[k] + K @ (y[k] - o_hat)
 
         if k < T:
             Ak = A_t[k]
@@ -293,10 +315,10 @@ def loo_values_nd(
     P_t_minus = np.linalg.inv(np.linalg.inv(P_pred[t]) + Lambda[t])
     m_t_minus = P_t_minus @ (np.linalg.inv(P_pred[t]) @ m_pred[t] + eta[t])
 
-    mu_y = H_t[t] @ m_t_minus + D_t[t] @ u_at(t)
-    Sigma_y = H_t[t] @ P_t_minus @ H_t[t].T + project_to_psd(R_t[t])
+    o_hat_t = H_t[t] @ m_t_minus + D_t[t] @ u_at(t)
+    Sigma_t = H_t[t] @ P_t_minus @ H_t[t].T + project_to_psd(R_t[t])
 
-    return [X_t_out, mu_y, Sigma_y]
+    return [X_t_out, o_hat_t, Sigma_t]
 
 
 # ============================================================
@@ -305,21 +327,25 @@ def loo_values_nd(
 def solve_kkt_max_quadratic_over_ellipsoid(
     *,
     X: np.ndarray,
-    y_t: np.ndarray,
-    mu: np.ndarray,
+    o_t: np.ndarray,
+    o_hat_t: np.ndarray,
     Sigma: np.ndarray,
     epsilon: float,
     tol: float = 1e-12,
     max_iter: int = 250,
 ) -> tuple[np.ndarray, float]:
+    """
+    Maximise the quadratic objective induced by perturbations measured relative
+    to o_t, under the ellipsoidal constraint centred at \hat{o}_t.
+    """
     if epsilon <= 0:
         raise ValueError("epsilon must be > 0")
 
     Sigma = project_to_psd(Sigma)
     S = sqrtm_psd(Sigma)
     M = project_to_psd(symmetrize(X.T @ X))
+    d = (o_hat_t - o_t).reshape(-1)
 
-    d = (mu - y_t).reshape(-1)
     A = symmetrize(S.T @ M @ S)
     b = (S.T @ M @ d).reshape(-1)
 
@@ -365,9 +391,9 @@ def solve_kkt_max_quadratic_over_ellipsoid(
         if nz > 0:
             z = z * (np.sqrt(epsilon) / nz)
 
-    y_star = mu + S @ z
-    obj_star = float(np.linalg.norm(X @ (y_star - y_t)) ** 2)
-    return y_star, obj_star
+    o_star = o_hat_t + S @ z
+    obj_star = float(np.linalg.norm(X @ (o_star - o_t)) ** 2)
+    return o_star, obj_star
 
 
 # ============================================================
@@ -446,15 +472,19 @@ def _points_limits(points: list[np.ndarray], pad_frac: float = 0.12):
 # ============================================================
 def plot_multi_epsilon_geometry_with_tangency(
     *,
-    y_t: np.ndarray,
-    mu_t: np.ndarray,
+    o_t: np.ndarray,
+    o_hat_t: np.ndarray,
     Sigma_t: np.ndarray,
     X_t: np.ndarray,
     epsilons: list[float],
     outpath: str,
     t: int,
 ) -> None:
-    if y_t.shape != (2,) or mu_t.shape != (2,):
+    """
+    Plot the observation-space geometry using o_t for the realised observation
+    and \hat{o}_t for the predicted observation.
+    """
+    if o_t.shape != (2,) or o_hat_t.shape != (2,):
         raise ValueError("This plot expects n_y=2.")
     if Sigma_t.shape != (2, 2):
         raise ValueError("Sigma_t must be (2,2).")
@@ -481,30 +511,30 @@ def plot_multi_epsilon_geometry_with_tangency(
         "#6F8F8D",  # desaturated teal
     ]
 
-    all_points = [y_t, mu_t]
+    all_points = [o_t, o_hat_t]
 
     # base points (not added to automatic legend)
     ax.scatter(
-        [mu_t[0]], [mu_t[1]],
+        [o_hat_t[0]], [o_hat_t[1]],
         s=80, marker="o", color="#6C6F7D",
         edgecolor="black", linewidths=0.45, zorder=8
     )
     ax.scatter(
-        [y_t[0]], [y_t[1]],
+        [o_t[0]], [o_t[1]],
         s=95, marker="x", color="#222222",
         linewidths=2.0, zorder=9
     )
 
     ax.annotate(
-        r"$\mu_t$",
-        xy=mu_t,
+        r"$\hat{o}_t$",
+        xy=o_hat_t,
         xytext=(7, 8),
         textcoords="offset points",
         color="#4A4A4A",
     )
     ax.annotate(
-        r"$y_t$",
-        xy=y_t,
+        r"$o_t$",
+        xy=o_t,
         xytext=(7, -14),
         textcoords="offset points",
         color="#2A2A2A",
@@ -517,21 +547,21 @@ def plot_multi_epsilon_geometry_with_tangency(
     for i, eps in enumerate(epsilons):
         color = soft_colors[i % len(soft_colors)]
 
-        y_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
-            X=X_t, y_t=y_t, mu=mu_t, Sigma=Sigma_t, epsilon=eps
+        o_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
+            X=X_t, o_t=o_t, o_hat_t=o_hat_t, Sigma=Sigma_t, epsilon=eps
         )
 
-        # constraint ellipse centered at mu_t
-        pts_constraint = _ellipse_points_from_quad(mu_t, Sigma_inv, eps)
-        all_points.extend([pts_constraint, y_star])
+        # Constraint ellipse centred at the predicted observation \hat{o}_t.
+        pts_constraint = _ellipse_points_from_quad(o_hat_t, Sigma_inv, eps)
+        all_points.extend([pts_constraint, o_star])
 
         ax.plot(
             pts_constraint[:, 0], pts_constraint[:, 1],
             color=color, linewidth=2.0, alpha=0.95, zorder=1
         )
 
-        # objective level-set centered at y_t that passes through y_star
-        pts_obj = _ellipse_points_from_quad(y_t, M, max(obj_star, 1e-12))
+        # Objective level-set centred at the realised observation o_t.
+        pts_obj = _ellipse_points_from_quad(o_t, M, max(obj_star, 1e-12))
         all_points.append(pts_obj)
 
         ax.plot(
@@ -539,17 +569,17 @@ def plot_multi_epsilon_geometry_with_tangency(
             color=color, linewidth=1.5, linestyle="--", alpha=0.90, zorder=2
         )
 
-        # tangent point
+        # Tangent point on the epsilon boundary.
         ax.scatter(
-            [y_star[0]], [y_star[1]],
+            [o_star[0]], [o_star[1]],
             s=68, color=color, edgecolor="black", linewidths=0.45, zorder=10
         )
 
-        # attack vector: y_t -> y_star
+        # Direction now starts at the predicted observation \hat{o}_t.
         ax.annotate(
             "",
-            xy=y_star,
-            xytext=y_t,
+            xy=o_star,
+            xytext=o_hat_t,
             arrowprops=dict(
                 arrowstyle="-|>",
                 lw=1.9,
@@ -562,10 +592,10 @@ def plot_multi_epsilon_geometry_with_tangency(
             zorder=6,
         )
 
-        # optional dotted segment underneath for extra visibility
+        # Dotted underlay to make the direction easier to spot.
         ax.plot(
-            [y_t[0], y_star[0]],
-            [y_t[1], y_star[1]],
+            [o_hat_t[0], o_star[0]],
+            [o_hat_t[1], o_star[1]],
             linestyle=":",
             linewidth=1.2,
             color=color,
@@ -573,21 +603,21 @@ def plot_multi_epsilon_geometry_with_tangency(
             zorder=5,
         )
 
-        # tangent point label
+        # Tangent-point label for the current epsilon.
         ax.annotate(
-            fr"$y^\star_{{{i+1}}}$",
-            xy=y_star,
+            fr"$o^\star_{{{i+1}}}$",
+            xy=o_star,
             xytext=(6, 6),
             textcoords="offset points",
             fontsize=9,
             color=color,
         )
 
-        constr_val = float((y_star - mu_t).T @ Sigma_inv @ (y_star - mu_t))
-        delta_adv = y_star - y_t
+        constr_val = float((o_star - o_hat_t).T @ Sigma_inv @ (o_star - o_hat_t))
+        delta_adv = o_star - o_hat_t
         print(
             f"epsilon={eps:.6f} | constraint={constr_val:.6f} | "
-            f"obj={obj_star:.6f} | delta_adv={delta_adv}"
+            f"obj={obj_star:.6f} | delta_from_prediction={delta_adv}"
         )
 
         epsilon_handles.append(
@@ -599,33 +629,28 @@ def plot_multi_epsilon_geometry_with_tangency(
     ax.set_ylim(*ylim)
 
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("y[0]")
-    ax.set_ylabel("y[1]")
-    ax.set_title(
-        f"Constraint ellipses and tangent objective level-sets at t={t}",
-        loc="left",
-        fontweight="semibold",
-    )
+    ax.set_xlabel("o1")
+    ax.set_ylabel("o2")
 
     # Legend 1: meaning of each visual element
     style_handles = [
         Line2D([0], [0], color="#7A7A7A", lw=2.0, linestyle="-",
                label="Constraint ellipse"),
         Line2D([0], [0], color="#7A7A7A", lw=1.5, linestyle="--",
-               label="Objective level-set"),
+               label="Optimization function level-set"),
         Line2D([0], [0], color="#7A7A7A", lw=0, linestyle="None",
                marker="o", markersize=6,
                markerfacecolor="#6C6F7D", markeredgecolor="black",
-               label=r"$\mu_t$"),
+               label=r"$\hat{o}_t$"),
         Line2D([0], [0], color="#222222", lw=0, linestyle="None",
                marker="x", markersize=8, markeredgewidth=2.0,
-               label=r"$y_t$"),
+               label=r"$o_t$"),
         Line2D([0], [0], color="#7A7A7A", lw=0, linestyle="None",
                marker="o", markersize=6,
                markerfacecolor="#BBBBBB", markeredgecolor="black",
-               label=r"Tangent point $y^\star$"),
+               label=r"$o^{\text{adv}}$"),
         Line2D([0], [0], color="#7A7A7A", lw=1.8, linestyle="-",
-               label=r"Attack vector $y_t \rightarrow y_t^{adv}$"),
+               label=r"Adversarial direction $\hat{o}_t \rightarrow o^{\text{adv}}$"),
     ]
 
     legend_style = ax.legend(
@@ -634,8 +659,7 @@ def plot_multi_epsilon_geometry_with_tangency(
         bbox_to_anchor=(0.01, 0.99),
         frameon=True,
         framealpha=0.96,
-        fontsize=8.3,
-        title="Meaning",
+        fontsize=15.3,
         title_fontsize=9,
         borderpad=0.35,
         labelspacing=0.28,
@@ -650,7 +674,7 @@ def plot_multi_epsilon_geometry_with_tangency(
         bbox_to_anchor=(0.99, 0.01),
         frameon=True,
         framealpha=0.96,
-        fontsize=8.3,
+        fontsize=15.3,
         title=r"$\epsilon$ values",
         title_fontsize=9,
         borderpad=0.35,
@@ -676,8 +700,11 @@ def plot_multi_epsilon_geometry_with_tangency(
 # ============================================================
 def main() -> None:
     n_x = n_y = n_u = 2
-    T = 25
+    T = 10
     seed = 2026
+    t = 4
+    epsilons = [1.0, 2.0, 3.84, 5.991, 9.210]  # chi-square-style levels for 2D
+    force_recompute = False
 
     A0 = np.array([[0.65, 0.40],
                    [-0.15, 0.70]], dtype=float)
@@ -690,10 +717,10 @@ def main() -> None:
     D0 = np.zeros((n_y, n_u), dtype=float)
 
     Q0 = 0.3 * np.array([[1.6, -1.40],
-                         [0.15, 0.70]], dtype=float)
+                         [0.95, 0.70]], dtype=float)
 
-    R0 = 0.2 * np.array([[0.65, 0.40],
-                         [-0.15, 1.70]], dtype=float)
+    R0 = 0.2 * np.array([[0.65, 0.80],
+                         [-0.15, 0.70]], dtype=float)
 
     Q0 = project_to_psd(Q0)
     R0 = project_to_psd(R0)
@@ -709,37 +736,43 @@ def main() -> None:
     m0 = x0.copy()
     P0 = 0.05 * np.eye(n_x)
 
-    x, y, u, mats = simulate_lgssm_nd(
-        A0=A0, B0=B0, H0=H0, D0=D0,
-        T=T, seed=seed, x0=x0,
-        Q0=Q0, R0=R0,
-        dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
-        u_low=-0.5, u_high=0.5,
-    )
-
-    t = 5
-
-    X_t, mu_t, Sigma_t = loo_values_nd(
-        t=t,
-        y=y, u=u,
-        A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-        Q_t=mats["Q_t"], R_t=mats["R_t"],
-        P0=P0, m0=m0,
-    )
-    y_t = y[t].copy()
-
-    epsilons = [1.0, 2.0, 3.84, 5.991, 9.210]  # varios niveles de confianza chi-cuadrado para 2 grados de libertad
-
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
     os.makedirs(out_dir, exist_ok=True)
     outpath = os.path.join(out_dir, f"multi_epsilon_tangent_geometry_t{t}_T{T}_seed{seed}.png")
+    data_path = data_path_for_plot(outpath)
+
+    def compute_plot_data() -> dict[str, np.ndarray]:
+        x, y, u, mats = simulate_lgssm_nd(
+            A0=A0, B0=B0, H0=H0, D0=D0,
+            T=T, seed=seed, x0=x0,
+            Q0=Q0, R0=R0,
+            dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
+            u_low=-0.5, u_high=0.5,
+        )
+
+        X_t, mu_t, Sigma_t = loo_values_nd(
+            t=t,
+            y=y, u=u,
+            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+            Q_t=mats["Q_t"], R_t=mats["R_t"],
+            P0=P0, m0=m0,
+        )
+        return {
+            "y_t": y[t].copy(),
+            "mu_t": mu_t,
+            "Sigma_t": Sigma_t,
+            "X_t": X_t,
+            "epsilons": np.asarray(epsilons, dtype=float),
+        }
+
+    data = cached_npz(data_path, compute_plot_data, force=force_recompute)
 
     plot_multi_epsilon_geometry_with_tangency(
-        y_t=y_t,
-        mu_t=mu_t,
-        Sigma_t=Sigma_t,
-        X_t=X_t,
-        epsilons=epsilons,
+        o_t=data["y_t"],
+        o_hat_t=data["mu_t"],
+        Sigma_t=data["Sigma_t"],
+        X_t=data["X_t"],
+        epsilons=data["epsilons"].astype(float).tolist(),
         outpath=outpath,
         t=t,
     )

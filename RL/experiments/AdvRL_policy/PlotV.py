@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""
+Plot the critic value function of the trained no-wind policy on a 2D grid.
+
+The displayed grid is r = position - goal. Since the no-wind policy was trained
+with delta = goal - position, each grid point is evaluated as:
+
+    z = [-r_x, -r_y].
+
+The resulting image is a direct slice of the learned scalar value V(z) for the
+two-dimensional no-wind observation space.
+"""
+
 from __future__ import annotations
 
 import os

@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-KKTOpt_MonteCarlo.py
+Monte Carlo study of KKT attack strength as epsilon changes.
 
-Monte Carlo study for KKT adversarial attacks in a random 2D LGSSM.
+Each run samples a random 2D linear Gaussian SSM,
 
-What it does:
-1) Generates N_runs random SSMs (matrices with entries ~ N(0, 4)).
-2) For each run, attacks exactly one observation y[t] at a time for t = 1..10
-   (never attacks t=0), using the KKT attack.
-3) Measures:
-   - Local effect  at attacked t:
-       sum_j |x_true[t,j] - x_adv_smooth[t,j]|
-   - Global effect over all hidden states:
-       sum_{k,j} |x_true[k,j] - x_adv_smooth[k,j]|
-4) Plots two boxplots vs attacked time t (with mean line):
-   - Top: local effect
-   - Bottom: global effect
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k),
 
-Output:
-- PNG only (no PDF)
+then attacks one selected observation y_t for several ellipsoid radii:
+
+    (y_t* - mu_{t|-t})^T Sigma_{t|-t}^{-1} (y_t* - mu_{t|-t}) <= epsilon.
+
+The KKT optimizer maximizes ||X_t (y_t* - y_t)||^2 inside the ellipsoid. The
+script summarizes how local and global RTS smoothing errors change across
+epsilon values, using cached arrays when available.
 """
 
 from __future__ import annotations
@@ -26,6 +21,11 @@ from __future__ import annotations
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+
+try:
+    from AdvSSM.io_utils import cached_npz
+except ModuleNotFoundError:
+    from io_utils import cached_npz
 
 
 # ============================================================
@@ -1174,13 +1174,41 @@ def main() -> None:
     T = 12
     epsilons = [0.5, 1.0, 2.0, 5.991, 9.21, 12.0,20.0, 30.0]  # 0.5,1,2: small; 5.991: chi2(2,0.95); 9.21: chi2(2,0.99); 12: chi2(2,0.999); 20,30: large
     base_seed = 2026
+    force_recompute = False
 
-    t_values, local_cube, global_cube = run_monte_carlo_attack_study_multi_epsilon(
-        N_runs=N_runs,
-        T=T,
-        epsilons=epsilons,
-        base_seed=base_seed,
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+    os.makedirs(out_dir, exist_ok=True)
+    outpath = os.path.join(
+        out_dir,
+        f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}.png"
     )
+    cache_path = os.path.join(
+        out_dir,
+        f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}_seed{base_seed}.npz"
+    )
+
+    def compute_mc_data() -> dict[str, np.ndarray | int]:
+        t_values, local_cube, global_cube = run_monte_carlo_attack_study_multi_epsilon(
+            N_runs=N_runs,
+            T=T,
+            epsilons=epsilons,
+            base_seed=base_seed,
+        )
+        return {
+            "t_values": t_values,
+            "local_cube": local_cube,
+            "global_cube": global_cube,
+            "epsilons": np.asarray(epsilons, dtype=float),
+            "N_runs": N_runs,
+            "T": T,
+            "base_seed": base_seed,
+        }
+
+    data = cached_npz(cache_path, compute_mc_data, force=force_recompute)
+    t_values = data["t_values"]
+    local_cube = data["local_cube"]
+    global_cube = data["global_cube"]
+    epsilons = data["epsilons"].astype(float).tolist()
 
     # Optional terminal summary
     local_means = np.nanmean(local_cube, axis=1)    # (n_eps, n_t)
@@ -1191,13 +1219,6 @@ def main() -> None:
         print(f"\n--- epsilon = {eps} ---")
         for t, lm, gm in zip(t_values, local_means[eidx], global_means[eidx]):
             print(f"t={int(t):2d} | local_mean={lm:.6f} | global_mean={gm:.6f}")
-
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    outpath = os.path.join(
-        out_dir,
-        f"mc_attack_effects_means_multi_eps_N{N_runs}_T{T}.png"
-    )
 
     plot_attack_effect_means_multi_epsilon(
         t_values=t_values,

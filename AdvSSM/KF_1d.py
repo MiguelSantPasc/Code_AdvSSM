@@ -28,6 +28,19 @@ def simulate_lgssm_1d(
     Q: float = 0.02,
     R: float = 0.03,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Simulate a scalar LGSSM trajectory.
+
+    The hidden state and observation are generated as:
+
+        x_{t+1} = A x_t + B u_t + w_{t+1},    w_{t+1} ~ N(0, Q)
+        y_t     = H x_t + D u_t + v_t,        v_t     ~ N(0, R)
+
+    Returns:
+        x: true latent states with shape (T+1,)
+        y: noisy observations with shape (T+1,)
+        u: controls with shape (T,)
+    """
     rng = np.random.default_rng(seed)
 
     u = rng.uniform(0.0, 1.0, size=T)
@@ -59,6 +72,19 @@ def kalman_filter_1d(
     m0: float,
     P0: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Run the scalar Kalman filter.
+
+    Prediction:
+        m_{t|t-1} = A m_{t-1|t-1} + B u_{t-1}
+        P_{t|t-1} = A^2 P_{t-1|t-1} + Q
+
+    Update:
+        S_t = H^2 P_{t|t-1} + R
+        K_t = P_{t|t-1} H / S_t
+        m_{t|t} = m_{t|t-1} + K_t (y_t - H m_{t|t-1} - D u_t)
+        P_{t|t} = (1 - K_t H) P_{t|t-1}
+    """
     T = y.shape[0] - 1
 
     m_pred = np.zeros(T + 1)
@@ -72,12 +98,12 @@ def kalman_filter_1d(
     for t in range(T + 1):
         u_t = u[t] if t < T else u[T - 1]  # only matters if D != 0
         y_hat = H * m_pred[t] + D * u_t
-        S = H * P_pred[t] * H + R
-        K = P_pred[t] * H / S
+        innovation_variance = H * P_pred[t] * H + R
+        kalman_gain = P_pred[t] * H / innovation_variance
 
-        innov = y[t] - y_hat
-        m_filt[t] = m_pred[t] + K * innov
-        P_filt[t] = (1.0 - K * H) * P_pred[t]
+        innovation = y[t] - y_hat
+        m_filt[t] = m_pred[t] + kalman_gain * innovation
+        P_filt[t] = (1.0 - kalman_gain * H) * P_pred[t]
 
         if t < T:
             m_pred[t + 1] = A * m_filt[t] + B * u[t]
@@ -93,6 +119,15 @@ def rts_smoother_1d(
     P_pred: np.ndarray,
     A: float,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Run the Rauch-Tung-Striebel smoother for the scalar filtered sequence.
+
+    Backward recursion for t = T-1,...,0:
+
+        C_t = P_{t|t} A / P_{t+1|t}
+        m_{t|T} = m_{t|t} + C_t (m_{t+1|T} - m_{t+1|t})
+        P_{t|T} = P_{t|t} + C_t^2 (P_{t+1|T} - P_{t+1|t})
+    """
     T = m_filt.shape[0] - 1
 
     m_smooth = np.zeros_like(m_filt)
@@ -102,9 +137,9 @@ def rts_smoother_1d(
     P_smooth[T] = P_filt[T]
 
     for t in range(T - 1, -1, -1):
-        C = P_filt[t] * A / P_pred[t + 1]
-        m_smooth[t] = m_filt[t] + C * (m_smooth[t + 1] - m_pred[t + 1])
-        P_smooth[t] = P_filt[t] + C * (P_smooth[t + 1] - P_pred[t + 1]) * C
+        smoothing_gain = P_filt[t] * A / P_pred[t + 1]
+        m_smooth[t] = m_filt[t] + smoothing_gain * (m_smooth[t + 1] - m_pred[t + 1])
+        P_smooth[t] = P_filt[t] + smoothing_gain * (P_smooth[t + 1] - P_pred[t + 1]) * smoothing_gain
 
     return m_smooth, P_smooth
 
@@ -116,6 +151,7 @@ def plot_true_and_smoothed_with_ci(
     title: str,
     ci_sigma: float = 1.96,  # ~95% if Gaussian
 ) -> None:
+    """Plot the true state and RTS smoothed mean with a Gaussian confidence band."""
     plt.rcParams.update(
         {
             "figure.dpi": 140,
@@ -129,12 +165,12 @@ def plot_true_and_smoothed_with_ci(
     t = np.arange(x.shape[0])
 
     # Muted colors
-    c_true = "#4C72B0"
-    c_smooth = "#C44E52"
+    true_state_color = "#4C72B0"
+    smoothed_mean_color = "#C44E52"
 
-    sd = np.sqrt(np.maximum(P_smooth, 0.0))
-    lower = m_smooth - ci_sigma * sd
-    upper = m_smooth + ci_sigma * sd
+    smooth_std = np.sqrt(np.maximum(P_smooth, 0.0))
+    lower = m_smooth - ci_sigma * smooth_std
+    upper = m_smooth + ci_sigma * smooth_std
 
     fig = plt.figure(figsize=(10.2, 4.9))
     ax = fig.add_subplot(111)
@@ -142,11 +178,11 @@ def plot_true_and_smoothed_with_ci(
     ax.fill_between(
         t, lower, upper,
         alpha=0.20,
-        label=f"{int(round(100 * (1 - 2 * (1 - 0.975))))}% CI (±{ci_sigma:.2f}σ)"
-        if abs(ci_sigma - 1.96) < 1e-6 else f"CI (±{ci_sigma:.2f}σ)",
+        label=f"{int(round(100 * (1 - 2 * (1 - 0.975))))}% CI (+/-{ci_sigma:.2f} sigma)"
+        if abs(ci_sigma - 1.96) < 1e-6 else f"CI (+/-{ci_sigma:.2f} sigma)",
     )
-    ax.plot(t, m_smooth, linewidth=1.25, color=c_smooth, label="RTS smoothed mean")
-    ax.plot(t, x, marker="o", markersize=3.2, linewidth=1.05, color=c_true, label="True state $x_t$")
+    ax.plot(t, m_smooth, linewidth=1.25, color=smoothed_mean_color, label="RTS smoothed mean")
+    ax.plot(t, x, marker="o", markersize=3.2, linewidth=1.05, color=true_state_color, label="True state $x_t$")
 
     ax.set_title(title)
     ax.set_xlabel("Time t")

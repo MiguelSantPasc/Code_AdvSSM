@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+"""
+Evaluate an adversarial observation attack against the wind policy with a KF.
+
+The attacker treats the latent position as:
+
+    x_{t+1} = x_t + a_t + wind_t + q_t
+    y_t     = x_t + r_t
+
+At each attacked step, projected gradient descent chooses y_t' inside the
+plausible ellipsoid around the current KF predictive distribution:
+
+    (y_t' - mu_t)^T Sigma_t^{-1} (y_t' - mu_t) <= epsilon.
+
+The objective minimizes the Monte Carlo estimate of E[V(x_t) | y_t', history],
+so the policy acts on a KF estimate that is statistically plausible but chosen
+to lower expected critic value. The script compares accumulated rewards for
+clean, noisy+KF, and attack+KF rollouts.
+"""
+
 # Eval_clean_noisyKF_attackKF.py
 #
 # HARD-CODED PATHS:
@@ -72,6 +91,12 @@ SEED0 = 1_000
 # PATHS
 # ------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "../../.."))
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
 
 ADV_FILE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "AdvRL_wind.py"))
 MODEL_PATH = os.path.abspath(os.path.join(_THIS_DIR, "../../saved_models/AdvRL_v2_policy.pt"))
@@ -712,6 +737,35 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
     results_dir: str,
 ):
     os.makedirs(results_dir, exist_ok=True)
+    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_noisyKF_attackKF.png")
+    data_path = data_path_for_plot(outpath)
+
+    if os.path.exists(data_path):
+        print(f"[cache] loading data: {data_path}")
+        data = load_npz(data_path)
+        acc_clean = np.asarray(data["acc_clean"], dtype=float)
+        acc_noisy_kf = np.asarray(data["acc_noisy_kf"], dtype=float)
+        acc_attack_kf = np.asarray(data["acc_attack_kf"], dtype=float)
+
+        fig = plt.figure(figsize=(12, 5))
+        plt.plot(acc_clean, linewidth=1.8, label="clean")
+        plt.plot(acc_noisy_kf, linewidth=1.8, label=f"noisy + KF (sigma={noise_std})")
+        plt.plot(
+            acc_attack_kf,
+            linewidth=1.8,
+            label=f"attack + KF (p={attack_prob}, sigma={attack_std}, eps={attack_eps}, MC={mc_samples}, steps={pgd_steps})",
+        )
+
+        plt.grid(True, alpha=0.25)
+        plt.xlabel("Episode")
+        plt.ylabel("Accumulated reward")
+        plt.title("Accumulated reward: clean vs noisy+KF vs attack+KF")
+        plt.legend()
+
+        fig.savefig(outpath, dpi=160, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[saved] {outpath}")
+        return
 
     acc_clean = []
     acc_noisy_kf = []
@@ -808,7 +862,24 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
     plt.title("Accumulated reward: clean vs noisy+KF vs attack+KF")
     plt.legend()
 
-    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_noisyKF_attackKF.png")
+    save_npz(
+        data_path,
+        acc_clean=np.asarray(acc_clean, dtype=float),
+        acc_noisy_kf=np.asarray(acc_noisy_kf, dtype=float),
+        acc_attack_kf=np.asarray(acc_attack_kf, dtype=float),
+        noise_std=np.asarray(noise_std, dtype=float),
+        attack_std=np.asarray(attack_std, dtype=float),
+        attack_eps=np.asarray(attack_eps, dtype=float),
+        attack_prob=np.asarray(attack_prob, dtype=float),
+        kf_meas_std=np.asarray(kf_meas_std, dtype=float),
+        kf_proc_std=np.asarray(kf_proc_std, dtype=float),
+        pgd_steps=np.asarray(pgd_steps, dtype=int),
+        pgd_step_size=np.asarray(pgd_step_size, dtype=float),
+        mc_samples=np.asarray(mc_samples, dtype=int),
+        n_episodes=np.asarray(n_episodes, dtype=int),
+        seed0=np.asarray(seed0, dtype=int),
+    )
+    print(f"[cache] saved data: {data_path}")
     fig.savefig(outpath, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print(f"[saved] {outpath}")

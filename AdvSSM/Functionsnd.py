@@ -1,4 +1,24 @@
+"""
+Leave-one-out quantities for a multidimensional linear Gaussian SSM.
+
+The model is indexed on k = 0,...,T with controls u_k for k < T:
+
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k)
+
+For a selected observation time t, the main helper computes:
+
+    X_t          : linear map from an observation perturbation at time t to the
+                   induced RTS-smoothed state perturbation.
+    mu_{t|-t}    : E[y_t | y_{-t}], the leave-one-out predictive mean.
+    Sigma_{t|-t}: Cov[y_t | y_{-t}], the leave-one-out predictive covariance.
+
+The implementation combines Kalman filter covariance recursions, RTS smoother
+gains J_k, and a backward information-form message that excludes y_t only.
+"""
+
 from __future__ import annotations
+
 import numpy as np
 
 def loo_values_nd(

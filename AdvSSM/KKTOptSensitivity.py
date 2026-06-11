@@ -2,19 +2,36 @@
 # -*- coding: utf-8 -*-
 
 """
-Sensitividad en ε (t=5, T=10):
-- Eje X: epsilon
-- Eje Y: distancia euclídea en t=5 entre:
-    (i) x_hat_base(t) vs x_true(t)   (RTS con y original)
-    (ii) x_hat_adv(t;ε) vs x_true(t) (RTS con y[t] reemplazado por y*(ε))
+Sensitivity of the KKT observation attack with respect to epsilon.
 
-Se repite para muchas semillas y se dibuja la media con IC 95% (bootstrap de la media).
+For each run, the script simulates an ND linear Gaussian SSM,
+
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k),
+
+then attacks one observation y_t inside the leave-one-out ellipsoid
+
+    (y_t* - mu_{t|-t})^T Sigma_{t|-t}^{-1} (y_t* - mu_{t|-t}) <= epsilon,
+
+where p(y_t | y_{-t}) = N(mu_{t|-t}, Sigma_{t|-t}). The KKT solution maximizes
+the quadratic state perturbation ||X_t (y_t* - y_t)||^2 under that constraint.
+
+The plotted response is the Euclidean distance at the attacked time between
+the true state and either the baseline RTS smoother or the adversarial RTS
+smoother. Repeating this for many seeds gives a bootstrap 95% confidence
+interval for the mean sensitivity curve.
 """
 
 from __future__ import annotations
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+
+try:
+    from AdvSSM.io_utils import cached_npz, data_path_for_plot
+except ModuleNotFoundError:
+    from io_utils import cached_npz, data_path_for_plot
 
 # -----------------------------
 # Utilities: PSD symmetrize + sqrt
@@ -802,21 +819,33 @@ def main():
     eps_grid = np.r_[np.linspace(0.1, 2.0, 10, endpoint=False),
                     np.linspace(2.0, 12.0, 16)]
     eps_fixed = 5.991
+    n_seeds = 70
+    seed0 = 2026
+    force_recompute = False
 
-    res2 = run_sensitivity_two_views(
-        T=T,
-        t_selected=t_selected,
-        eps_grid=eps_grid,
-        eps_fixed=eps_fixed,
-        n_seeds=70,
-        seed0=2026,
+    savepath = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "output/two_panel_ratio_eps_and_time.png",
     )
+    data_path = data_path_for_plot(savepath)
+
+    def compute_sensitivity_data() -> dict:
+        return run_sensitivity_two_views(
+            T=T,
+            t_selected=t_selected,
+            eps_grid=eps_grid,
+            eps_fixed=eps_fixed,
+            n_seeds=n_seeds,
+            seed0=seed0,
+        )
+
+    res2 = cached_npz(data_path, compute_sensitivity_data, force=force_recompute)
 
     out = plot_two_panel(
         res2,
         use_logx_left=False,
         eps_ref=5.991,
-        savepath=os.path.join(os.path.dirname(os.path.abspath(__file__)), "output/two_panel_ratio_eps_and_time.png"),
+        savepath=savepath,
         show=False,   # pon False si solo quieres guardar
     )
     print("Saved:", out)

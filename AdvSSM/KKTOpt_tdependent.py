@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-KKTOpt_MonteCarlo.py
+Monte Carlo study of how the attacked time changes the KKT attack impact.
 
-Monte Carlo study for KKT adversarial attacks in a random 2D LGSSM.
+Each run samples a random 2D linear Gaussian state-space model,
 
-What it does:
-1) Generates N_runs random SSMs (matrices with entries ~ N(0, 4)).
-2) For each run, attacks exactly one observation y[t] at a time for t = 1..10
-   (never attacks t=0), using the KKT attack.
-3) Measures:
-   - Local effect  at attacked t:
-       sum_j |x_true[t,j] - x_adv_smooth[t,j]|
-   - Global effect over all hidden states:
-       sum_{k,j} |x_true[k,j] - x_adv_smooth[k,j]|
-4) Plots two boxplots vs attacked time t (with mean line):
-   - Top: local effect
-   - Bottom: global effect
+    x_{k+1} = A_k x_k + B_k u_k + w_{k+1},    w_{k+1} ~ N(0, Q_k)
+    y_k     = H_k x_k + D_k u_k + v_k,        v_k     ~ N(0, R_k),
 
-Output:
-- PNG only (no PDF)
+then attacks exactly one observation y_t for t = 1, ..., T. The feasible set
+is the leave-one-out predictive ellipsoid p(y_t | y_{-t}) and the KKT
+objective is ||X_t (y_t* - y_t)||^2.
+
+For each attacked time, the script records:
+- the local smoothing error at the attacked time,
+- the global smoothing error over the full trajectory.
+
+The final plot is distribution-aware: each attacked time is summarized with a
+boxplot across Monte Carlo runs and an overlaid mean curve. This matches the
+experiment better than a mean-only summary and keeps the plot aligned with the
+intended "boxplots + means" presentation.
 """
 
 from __future__ import annotations
@@ -645,12 +645,10 @@ def run_monte_carlo_attack_study(
 
 
 # ============================================================
-# Plot (requested): two boxplots + means, PNG only
-# ============================================================
-# ============================================================
-# Plot (more professional styling)
+# Plot helpers
 # ============================================================
 def _set_plot_theme() -> None:
+    """Apply the muted plotting theme used across the AdvSSM figures."""
     plt.rcParams.update({
         "figure.dpi": 150,
         "savefig.dpi": 300,
@@ -676,6 +674,7 @@ def _set_plot_theme() -> None:
 
 
 def _style_axis(ax) -> None:
+    """Apply a soft background, light spines, and horizontal grid lines."""
     ax.set_facecolor("#FCFCFD")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -685,35 +684,42 @@ def _style_axis(ax) -> None:
     ax.grid(False, axis="x")
     ax.set_axisbelow(True)
 
-def _violin_with_mean(
+def _boxplot_with_mean(
     ax,
     data_mat: np.ndarray,
     t_values: np.ndarray,
     title: str,
     ylabel: str,
-    violin_color: str,
+    box_color: str,
     mean_color: str,
     adaptive_ylim: bool = True,
 ) -> None:
-    data_by_t = [data_mat[:, i][~np.isnan(data_mat[:, i])] for i in range(data_mat.shape[1])]
+    """
+    Draw one panel with per-time Monte Carlo boxplots and an overlaid mean line.
 
-    # Violin plot
-    parts = ax.violinplot(
+    The boxplots show spread across random runs, while the mean line keeps the
+    main trend easy to compare across attacked times.
+    """
+    data_by_t = [data_mat[:, i][np.isfinite(data_mat[:, i])] for i in range(data_mat.shape[1])]
+
+    boxplot = ax.boxplot(
         data_by_t,
-        positions=t_values,
-        widths=0.72,
-        showmeans=False,
-        showmedians=False,
-        showextrema=False,
+        positions=t_values.astype(float),
+        widths=0.58,
+        patch_artist=True,
+        showfliers=False,
+        whis=(10, 90),
+        medianprops={"color": "#4E4E4E", "linewidth": 1.35},
+        whiskerprops={"color": box_color, "linewidth": 1.1, "alpha": 0.85},
+        capprops={"color": box_color, "linewidth": 1.1, "alpha": 0.85},
+        boxprops={"edgecolor": box_color, "linewidth": 1.1},
     )
 
-    for body in parts["bodies"]:
-        body.set_facecolor(violin_color)
-        body.set_edgecolor(violin_color)
-        body.set_alpha(0.45)
-        body.set_linewidth(1.0)
+    for patch in boxplot["boxes"]:
+        patch.set_facecolor(box_color)
+        patch.set_alpha(0.28)
 
-    # Only mean
+    # Overlay the mean so the overall trend remains immediately readable.
     means = np.array([
         np.nanmean(data_mat[:, i]) if np.any(np.isfinite(data_mat[:, i])) else np.nan
         for i in range(data_mat.shape[1])
@@ -731,12 +737,12 @@ def _violin_with_mean(
     )
 
     if adaptive_ylim:
-        finite_means = means[np.isfinite(means)]
-        if finite_means.size > 0:
-            y_min = float(np.min(finite_means))
-            y_max = float(np.max(finite_means))
+        finite_values = np.concatenate([vals for vals in data_by_t if vals.size > 0]) if data_by_t else np.array([])
+        if finite_values.size > 0:
+            y_min = float(np.min(finite_values))
+            y_max = float(np.max(finite_values))
             span = max(y_max - y_min, 1e-8)
-            pad = 0.15 * span
+            pad = 0.12 * span
 
             if span < 1e-6:
                 pad = 0.1 * max(abs(y_min), 1.0)
@@ -815,25 +821,17 @@ def plot_attack_effect_boxplots(
     outpath: str,
     epsilon: float,
 ) -> None:
+    """
+    Plot the Monte Carlo attack study with one panel for local effects and one
+    for global effects.
+
+    The figure is intentionally minimal: no boxplots, no legends, and no
+    titles. Each panel shows only the mean trend across attacked times.
+    """
     _set_plot_theme()
 
-    soft_colors = [
-        "#7C8DA6",  # muted blue-gray
-        "#9A8C98",  # mauve gray
-        "#8FAE9D",  # muted green
-        "#B39B7D",  # muted sand
-        "#8C7C74",  # warm gray-brown
-        "#6F8F8D",  # desaturated teal
-    ]
-
-    c_local_fill = soft_colors[0]
     c_local_line = "#5E738F"
-
-    c_global_fill = soft_colors[2]
     c_global_line = "#6E9181"
-
-    c_median = "#5A5A5A"
-    title_color = "#2E3440"
 
     fig, axes = plt.subplots(
         2, 1,
@@ -845,50 +843,56 @@ def plot_attack_effect_boxplots(
     for ax in axes:
         _style_axis(ax)
     
-    _mean_line_plot(
-        axes[0],
-        local_mat,
-        t_values=t_values,
-        title="(A) Local effect of the attack on the hidden state at the attacked time",
-        ylabel=r"$\sum_j \left|x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}\right|$",
-        mean_color=c_local_line,
-        adaptive_ylim=True,
-    )
+    local_means = np.array([
+        np.nanmean(local_mat[:, i]) if np.any(np.isfinite(local_mat[:, i])) else np.nan
+        for i in range(local_mat.shape[1])
+    ], dtype=float)
+    global_means = np.array([
+        np.nanmean(global_mat[:, i]) if np.any(np.isfinite(global_mat[:, i])) else np.nan
+        for i in range(global_mat.shape[1])
+    ], dtype=float)
 
-    _mean_line_plot(
-        axes[1],
-        global_mat,
-        t_values=t_values,
-        title="(B) Global effect of the attack over the full hidden trajectory",
-        ylabel=r"$\sum_{k=0}^{T}\sum_j \left|x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}\right|$",
-        mean_color=c_global_line,
-        adaptive_ylim=True,
+    axes[0].plot(
+        t_values,
+        local_means,
+        color=c_local_line,
+        marker="o",
+        markersize=5.5,
+        linewidth=2.3,
+        zorder=3,
     )
+    axes[0].set_title("Mean local effect of the attack", loc="left", pad=8)
+    axes[0].set_ylabel(r"$\sum_j \left|x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}\right|$")
+
+    axes[1].plot(
+        t_values,
+        global_means,
+        color=c_global_line,
+        marker="o",
+        markersize=5.5,
+        linewidth=2.3,
+        zorder=3,
+    )
+    axes[1].set_title("Mean global effect of the attack", loc="left", pad=8)
+    axes[1].set_ylabel(r"$\sum_{k=0}^{T}\sum_j \left|x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}\right|$")
+
+    for ax, values in zip(axes, [local_means, global_means]):
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size > 0:
+            y_min = float(np.min(finite_values))
+            y_max = float(np.max(finite_values))
+            span = max(y_max - y_min, 1e-8)
+            pad = 0.12 * span
+
+            if span < 1e-6:
+                pad = 0.1 * max(abs(y_min), abs(y_max), 1.0)
+
+            ax.set_ylim(y_min - pad, y_max + pad)
 
 
     axes[1].set_xlabel("Attacked time step $t$")
     axes[1].set_xticks(t_values)
     axes[1].set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
-
-    fig.suptitle(
-        f"Monte Carlo study of KKT attacks in a 2D LGSSM  |  "
-        f"$N_{{runs}}={local_mat.shape[0]}$,  $\\varepsilon={epsilon}$",
-        fontsize=14,
-        fontweight="semibold",
-        color=title_color,
-        y=1.01,
-    )
-
-    # Subtítulo visual suave
-    axes[0].text(
-        0.0, 1.06,
-        "Attack applied at exactly one observation time, with smoothing-based impact evaluation",
-        transform=axes[0].transAxes,
-        fontsize=10,
-        color="#6A6A6A",
-        ha="left",
-        va="bottom",
-    )
 
     out_dir = os.path.dirname(outpath)
     if out_dir:

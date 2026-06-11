@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+Plot the critic value function of the trained wind policy on a 2D grid.
+
+The grid variable is r = position - goal, but the policy was trained on
+delta = goal - position. Therefore each grid point feeds the model:
+
+    z = [-r_x, -r_y, wind_x, wind_y].
+
+A fixed wind vector is appended to every grid observation, producing a slice of
+the learned value V(z). The optional line through the origin shows the fixed
+wind direction in the same relative-position coordinates.
+"""
+
 from __future__ import annotations
 
 import os
