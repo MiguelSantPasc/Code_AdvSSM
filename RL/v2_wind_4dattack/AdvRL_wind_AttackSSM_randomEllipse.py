@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Evaluate a 4D adversarial observation attack against the wind policy with a KF.
+Evaluate 4D observation attacks against the wind policy with a KF baseline.
 
 The environment and trained policy are exactly the same as in ``v2_wind``:
 
@@ -8,15 +8,23 @@ The environment and trained policy are exactly the same as in ``v2_wind``:
     y_t     = x_t + r_t
 
 The difference is the attack surface. Instead of perturbing only the measured
-position, projected gradient descent now attacks the full 4D policy
-observation
+position, projected gradient descent attacks the full 4D policy observation
 
     z_t = [(goal - y_t) / goal_r_max, wind_x_t, wind_y_t]
 
 inside a 4D ellipsoid around the nominal observation. The first two attacked
 coordinates alter the KF position update; the last two alter the wind seen by
-the policy and by the predictor used for the next-step belief. The script
-compares accumulated rewards for clean, noisy+KF, and attack+KF rollouts.
+the policy and by the predictor used for the next-step belief.
+
+This variant also adds a random baseline: whenever an attack is triggered, we
+can replace the PGD adversarial point by a random point sampled from the same
+4D ellipsoid defined by ``attack_std`` and ``attack_eps``. The script
+therefore compares:
+
+    1) clean
+    2) noisy + KF
+    3) PGD attack + KF
+    4) random ellipsoid point + KF
 """
 
 # Eval_clean_noisyKF_attackKF.py
@@ -30,6 +38,7 @@ compares accumulated rewards for clean, noisy+KF, and attack+KF rollouts.
 #   1) clean
 #   2) noisy + KF
 #   3) attack 4D + KF
+#   4) random ellipsoid + KF
 #
 # Interpretation:
 #   - clean:
@@ -41,6 +50,9 @@ compares accumulated rewards for clean, noisy+KF, and attack+KF rollouts.
 #       at each attacked step, a 4D observation z_t' is found with PGD
 #       by minimizing the critic value under the posterior induced by its
 #       attacked position component and the attacked wind seen by the policy
+#   - random ellipsoid + KF:
+#       at each attacked step, a 4D observation z_t' is sampled uniformly
+#       from the same attack ellipsoid used by the adversary
 #
 # State model used by the KF attacker/filter:
 #   x_t in R^2 = latent position
@@ -71,11 +83,11 @@ DEVICE = "cpu"
 NOISE_STD = 0.5
 
 # Adversarial attack geometry
-ATTACK_PROB = 0.025
+ATTACK_PROB = 0.15
 ATTACK_STD = NOISE_STD
-ATTACK_EPS = 2.321   # ~ chi-square 95% in 4D
+ATTACK_EPS = 2.488   # ~ chi-square 95% in 4D
 
-# KF modelt
+# KF model
 KF_MEAS_STD = NOISE_STD
 KF_PROC_STD = 0.03
 
@@ -182,6 +194,40 @@ def project_to_attack_region(
     z = (s / (s + lam_star)) * r
     y_proj = center + U @ z
     return y_proj.astype(np.float32)
+
+
+def sample_uniform_from_attack_region(
+    center: np.ndarray,
+    Sigma: np.ndarray,
+    epsilon: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Sample approximately uniformly from:
+        { y : (y-center)^T Sigma^{-1} (y-center) <= epsilon }
+    """
+    center = np.asarray(center, dtype=np.float64).reshape(-1)
+    Sigma = project_to_psd(Sigma).astype(np.float64)
+
+    if epsilon <= 0.0:
+        return center.astype(np.float32)
+
+    dim = center.size
+    direction = rng.normal(size=dim)
+    norm = np.linalg.norm(direction)
+
+    while norm <= 1e-12:
+        direction = rng.normal(size=dim)
+        norm = np.linalg.norm(direction)
+
+    direction = direction / norm
+
+    # Uniform sample inside the unit ball, then map it into the ellipsoid.
+    radius = float(rng.random()) ** (1.0 / float(dim))
+    ball_sample = np.sqrt(float(epsilon)) * radius * direction
+    L = sqrtm_psd(Sigma).astype(np.float64)
+    sample = center + L @ ball_sample
+    return sample.astype(np.float32)
 
 
 # ============================================================
@@ -735,11 +781,148 @@ def rollout_episode_return_attack_kf(
             break
 
     return float(ep_return)
+
+
+def rollout_episode_return_random_attack_kf(
+    env,
+    model,
+    attack_std: float,
+    attack_eps: float,
+    attack_prob: float,
+    kf_meas_std: float,
+    kf_proc_std: float,
+    seed_for_attack: int,
+    device: str = "cpu",
+) -> float:
+    """
+    Random-ellipsoid baseline + KF with probabilistic attacks:
+      - env is clean
+      - the first observation is NEVER attacked
+      - first step acts from the initial nominal/KF state so the episode starts at (0,0)
+      - from the second step onward, each observation is attacked with probability attack_prob
+      - if an attack is triggered, sample a random 4D observation inside the same ellipsoid
+      - if not attacked, the KF updates with the nominal noisy measurement
+      - policy acts on the posterior mean m_post
+    """
+    dev = torch.device(device)
+    obs = env.reset()
+
+    goal = env.goal.copy()
+    goal_r_max = float(env.cfg.goal_r_max)
+
+    R = (float(kf_meas_std) ** 2) * np.eye(2, dtype=np.float32)
+    Q = (float(kf_proc_std) ** 2) * np.eye(2, dtype=np.float32)
+    Sigma_attack = (float(attack_std) ** 2) * np.eye(4, dtype=np.float32)
+
+    # Reuse the same attack gate and noise structure as the PGD baseline.
+    rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
+    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
+    rng_attack_sample = np.random.default_rng(int(seed_for_attack) + 999999)
+
+    y0, wind_xy = split_policy_obs(obs, goal, goal_r_max)
+
+    m_post, P_post, _K = kf_update_position(
+        m_pred=y0.copy(),
+        P_pred=R.copy(),
+        y_obs=y0,
+        R=R,
+    )
+
+    ep_return = 0.0
+
+    obs_filt = build_policy_obs_from_position(
+        pos=m_post,
+        goal=goal,
+        goal_r_max=goal_r_max,
+        wind_xy=wind_xy,
+    )
+
+    with torch.no_grad():
+        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+    m_pred, P_pred = kf_predict_position(
+        m_post=m_post,
+        P_post=P_post,
+        action=action,
+        wind_xy=wind_xy,
+        Q=Q,
+    )
+
+    obs, reward, done, _info = env.step(action)
+    ep_return += float(reward)
+
+    if done:
+        return float(ep_return)
+
+    for _ in range(1, env.cfg.max_steps):
+        y_clean, wind_xy_clean = split_policy_obs(obs, goal, goal_r_max)
+
+        do_attack = bool(rng_attack_gate.random() < float(attack_prob))
+        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
+        y_noisy = y_clean + noise
+
+        obs_clean = build_policy_obs_from_position(
+            pos=y_clean,
+            goal=goal,
+            goal_r_max=goal_r_max,
+            wind_xy=wind_xy_clean,
+        )
+
+        if do_attack:
+            obs_random = sample_uniform_from_attack_region(
+                center=obs_clean,
+                Sigma=Sigma_attack,
+                epsilon=attack_eps,
+                rng=rng_attack_sample,
+            )
+            y_random, wind_xy_used = split_policy_obs(obs_random, goal, goal_r_max)
+            m_post, P_post, _K = kf_update_position(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=y_random,
+                R=R,
+            )
+        else:
+            m_post, P_post, _K = kf_update_position(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=y_noisy,
+                R=R,
+            )
+            wind_xy_used = wind_xy_clean
+
+        obs_filt = build_policy_obs_from_position(
+            pos=m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+            wind_xy=wind_xy_used,
+        )
+
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+        m_pred, P_pred = kf_predict_position(
+            m_post=m_post,
+            P_post=P_post,
+            action=action,
+            wind_xy=wind_xy_used,
+            Q=Q,
+        )
+
+        obs, reward, done, _info = env.step(action)
+        ep_return += float(reward)
+
+        if done:
+            break
+
+    return float(ep_return)
 # ============================================================
 # Plot accumulated reward
 # ============================================================
 
-def plot_accumulated_reward_clean_noisykf_attackkf(
+def plot_accumulated_reward_clean_noisykf_attackkf_randomkf(
     AdvRLEnvConfig,
     EnvCleanClass,
     EnvNoisyClass,
@@ -760,8 +943,17 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
     results_dir: str,
 ):
     os.makedirs(results_dir, exist_ok=True)
-    outpath = os.path.join(results_dir, "eval_accumulated_reward_clean_noisyKF_attackKF_4dobs.png")
+    outpath = os.path.join(
+        results_dir,
+        "eval_accumulated_reward_clean_noisyKF_attackKF_randomEllipseKF_4dobs.png",
+    )
     data_path = data_path_for_plot(outpath)
+    colors = {
+        "clean": "#9ecae1",
+        "noisy_kf": "#a8ddb5",
+        "attack_kf": "#fbb4ae",
+        "random_kf": "#decbe4",
+    }
 
     if os.path.exists(data_path):
         print(f"[cache] loading data: {data_path}")
@@ -769,20 +961,33 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
         acc_clean = np.asarray(data["acc_clean"], dtype=float)
         acc_noisy_kf = np.asarray(data["acc_noisy_kf"], dtype=float)
         acc_attack_kf = np.asarray(data["acc_attack_kf"], dtype=float)
+        acc_random_attack_kf = np.asarray(data["acc_random_attack_kf"], dtype=float)
 
         fig = plt.figure(figsize=(12, 5))
-        plt.plot(acc_clean, linewidth=1.8, label="clean")
-        plt.plot(acc_noisy_kf, linewidth=1.8, label=f"noisy + KF (sigma={noise_std})")
+        plt.plot(acc_clean, linewidth=1.8, color=colors["clean"], label="clean")
+        plt.plot(
+            acc_noisy_kf,
+            linewidth=1.8,
+            color=colors["noisy_kf"],
+            label="noisy + KF",
+        )
         plt.plot(
             acc_attack_kf,
             linewidth=1.8,
-            label=f"attack 4D + KF (p={attack_prob}, sigma={attack_std}, eps={attack_eps}, MC={mc_samples}, steps={pgd_steps})",
+            color=colors["attack_kf"],
+            label="PGD attack + KF",
+        )
+        plt.plot(
+            acc_random_attack_kf,
+            linewidth=1.8,
+            color=colors["random_kf"],
+            label="random ellipse + KF",
         )
 
         plt.grid(True, alpha=0.25)
         plt.xlabel("Episode")
         plt.ylabel("Accumulated reward")
-        plt.legend()
+        plt.legend(loc="lower right")
 
         fig.savefig(outpath, dpi=160, bbox_inches="tight")
         plt.close(fig)
@@ -792,10 +997,12 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
     acc_clean = []
     acc_noisy_kf = []
     acc_attack_kf = []
+    acc_random_attack_kf = []
 
     total_clean = 0.0
     total_noisy_kf = 0.0
     total_attack_kf = 0.0
+    total_random_attack_kf = 0.0
 
     for k in range(n_episodes):
         seed = int(seed0 + k)
@@ -803,6 +1010,7 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
         cfg_clean = AdvRLEnvConfig(**{**asdict(base_cfg)})
         cfg_noisy = AdvRLEnvConfig(**{**asdict(base_cfg)})
         cfg_attack = AdvRLEnvConfig(**{**asdict(base_cfg)})
+        cfg_random = AdvRLEnvConfig(**{**asdict(base_cfg)})
 
         cfg_clean.seed = seed
         cfg_clean.obs_noise_std = 0.0
@@ -813,9 +1021,13 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
         cfg_attack.seed = seed
         cfg_attack.obs_noise_std = 0.0
 
+        cfg_random.seed = seed
+        cfg_random.obs_noise_std = 0.0
+
         env_clean = EnvCleanClass(cfg_clean)
         env_noisy = EnvNoisyClass(cfg_noisy)
         env_attack = EnvCleanClass(cfg_attack)
+        env_random = EnvCleanClass(cfg_random)
 
         ret_clean = rollout_episode_return_clean(
             env_clean,
@@ -846,48 +1058,72 @@ def plot_accumulated_reward_clean_noisykf_attackkf(
             device=device,
         )
 
+        ret_random_attack_kf = rollout_episode_return_random_attack_kf(
+            env_random,
+            model,
+            attack_std=attack_std,
+            attack_eps=attack_eps,
+            attack_prob=attack_prob,
+            kf_meas_std=kf_meas_std,
+            kf_proc_std=kf_proc_std,
+            seed_for_attack=seed,
+            device=device,
+        )
+
         total_clean += float(ret_clean)
         total_noisy_kf += float(ret_noisy_kf)
         total_attack_kf += float(ret_attack_kf)
+        total_random_attack_kf += float(ret_random_attack_kf)
 
         acc_clean.append(total_clean)
         acc_noisy_kf.append(total_noisy_kf)
         acc_attack_kf.append(total_attack_kf)
+        acc_random_attack_kf.append(total_random_attack_kf)
 
         if (k + 1) % 25 == 0 or (k + 1) == n_episodes:
             print(
                 f"[{k+1:4d}/{n_episodes}] "
                 f"clean={total_clean:.1f} | "
                 f"noisy+KF={total_noisy_kf:.1f} | "
-                f"attack+KF={total_attack_kf:.1f}"
+                f"attack+KF={total_attack_kf:.1f} | "
+                f"random+KF={total_random_attack_kf:.1f}"
             )
 
     fig = plt.figure(figsize=(12, 5))
-    plt.plot(acc_clean, linewidth=1.8, label="clean")
+    plt.plot(acc_clean, linewidth=1.8, color=colors["clean"], label="clean")
     plt.plot(
         acc_noisy_kf,
         linewidth=1.8,
+        color=colors["noisy_kf"],
         label=f"noisy + KF (σ={noise_std})",
     )
     plt.plot(
         acc_attack_kf,
         linewidth=1.8,
+        color=colors["attack_kf"],
         label=(
             r"attack 4D + KF "
             f"(p={attack_prob}, σ={attack_std}, ε={attack_eps}, MC={mc_samples}, steps={pgd_steps})"
         ),
     )
+    plt.plot(
+        acc_random_attack_kf,
+        linewidth=1.8,
+        color=colors["random_kf"],
+        label="random ellipse + KF",
+    )
 
     plt.grid(True, alpha=0.25)
     plt.xlabel("Episode")
     plt.ylabel("Accumulated reward")
-    plt.legend()
+    plt.legend(loc="lower right")
 
     save_npz(
         data_path,
         acc_clean=np.asarray(acc_clean, dtype=float),
         acc_noisy_kf=np.asarray(acc_noisy_kf, dtype=float),
         acc_attack_kf=np.asarray(acc_attack_kf, dtype=float),
+        acc_random_attack_kf=np.asarray(acc_random_attack_kf, dtype=float),
         noise_std=np.asarray(noise_std, dtype=float),
         attack_std=np.asarray(attack_std, dtype=float),
         attack_eps=np.asarray(attack_eps, dtype=float),
@@ -961,9 +1197,10 @@ def main():
     print(f"[cfg] ATTACK_STD={ATTACK_STD} | ATTACK_EPS={ATTACK_EPS}")
     print(f"[cfg] KF_MEAS_STD={KF_MEAS_STD} | KF_PROC_STD={KF_PROC_STD}")
     print(f"[cfg] PGD_STEPS={PGD_STEPS} | PGD_STEP_SIZE={PGD_STEP_SIZE} | MC_SAMPLES={MC_SAMPLES}")
+    print("[cfg] RANDOM_BASELINE=same 4D ellipsoid, uniform sample when attack is triggered")
     print(f"[out] FIGURES_DIR={FIGURES_DIR}")
 
-    plot_accumulated_reward_clean_noisykf_attackkf(
+    plot_accumulated_reward_clean_noisykf_attackkf_randomkf(
         AdvRLEnvConfig=AdvRLEnvConfig,
         EnvCleanClass=AdvRL2DEnv,
         EnvNoisyClass=EnvNoisy,
