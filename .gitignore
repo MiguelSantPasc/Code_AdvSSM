@@ -6,9 +6,6 @@ __pycache__/
 .env
 
 
-# Models
-**/saved_models/
-
 # VS Code / IDEs
 .vscode/
 .idea/
