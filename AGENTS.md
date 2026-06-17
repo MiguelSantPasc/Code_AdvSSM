@@ -13,3 +13,7 @@
 - Put short, clear legends inside the axes.
 - Never place legends outside the plot.
 - Use pastel colors by default.
+
+## Coding
+
+- Do not use os.eniviron.get, use default in the main so I can change it leaatter
