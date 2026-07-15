@@ -17,3 +17,4 @@
 ## Coding
 
 - Do not use os.eniviron.get, use default in the main so I can change it leaatter
+- Variablees are defined within each script, not outside 

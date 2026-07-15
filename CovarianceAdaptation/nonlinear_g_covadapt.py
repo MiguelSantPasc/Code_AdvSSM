@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-comparison_g.py
+nonlinear_g_covadapt_upward_parallel.py
 
 Covariance-adaptation comparison for the 3D nonlinear `g`-attack example.
 
@@ -13,11 +13,14 @@ Design choices:
    `o_T`, targeting the posterior quantity `E[g(s_T) | o]`.
 2. The ellipsoid size is fixed through a 95% 3D chi-square coverage, i.e.
    `epsilon = chi2_ppf(0.95; df = 3)`.
-3. The defense modifies the attacked-time observation covariance only along
+3. The attack is upward-only: if the clean hidden-state risk is already above
+   the call level, or if the optimized perturbation does not actually raise
+   the posterior call probability, the script keeps the clean observation.
+4. The defense modifies the attacked-time observation covariance only along
    the online adversarial direction, then runs the Kalman update and finally
    the RTS smoother so the downstream posterior remains aligned with the
    original nonlinear example.
-4. The figure intentionally mirrors `AttackSense3D_CallSummary.py`, but the
+5. The figure intentionally mirrors `AttackSense3D_CallSummary.py`, but the
    varying parameter is now `lambda` instead of `epsilon`:
    - left panel: clean, attacked, and defended call-probability curves,
    - right panel: false-positive and false-negative rates versus `lambda`.
@@ -32,6 +35,8 @@ Plotting conventions followed here:
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 import os
 import sys
 
@@ -39,6 +44,8 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+from matplotlib.legend_handler import HandlerBase
+from matplotlib.patches import Rectangle
 from scipy.stats import chi2
 
 
@@ -63,7 +70,7 @@ try:
         white_box_point_attack_nd,
     )
     from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from CovarianceAdaptation.comparison import (
+    from CovarianceAdaptation.covariance_adaptation_utils import (
         compute_contamination_prior,
         gaussian_logpdf,
         log_mix_posterior_weight,
@@ -87,7 +94,7 @@ except ModuleNotFoundError:
         white_box_point_attack_nd,
     )
     from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from comparison import (
+    from covariance_adaptation_utils import (
         compute_contamination_prior,
         gaussian_logpdf,
         log_mix_posterior_weight,
@@ -107,12 +114,14 @@ DEFAULT_T = 5
 DEFAULT_ATTACK_T = DEFAULT_T
 DEFAULT_SEED = 2025
 DEFAULT_COVERAGE = 0.95
-DEFAULT_M_STAR = np.array([0.9], dtype=float)
+DEFAULT_M_STAR = np.array([1.0], dtype=float)
 DEFAULT_ETA = 1.5
-DEFAULT_N_STEPS = 500
+DEFAULT_N_STEPS = 700
 DEFAULT_N_MC_OPT = 96
 DEFAULT_N_MC_EST = 1200
-DEFAULT_CALL_THRESHOLD = 0.90
+DEFAULT_CALL_THRESHOLD = 0.50
+DEFAULT_POSTERIOR_ATTACK_THRESHOLD = 0.30
+DEFAULT_UPWARD_ATTACK_TOL = 1e-4
 
 
 # ============================================================
@@ -166,6 +175,57 @@ def lambda_colors(lambda_scales: np.ndarray) -> list[str]:
     return [mcolors.to_hex(cmap(float(norm(max(scale, positive_scales[0]))))[:3]) for scale in lambda_scales]
 
 
+class MiniScaleLegendHandle:
+    """Legend-only handle used to draw a compact viridis mini-scale."""
+
+
+class HandlerMiniScale(HandlerBase):
+    """Draw a small segmented viridis scale inside a legend entry."""
+
+    def __init__(self, cmap_name: str = "viridis", n_steps: int = 7) -> None:
+        super().__init__()
+        self.cmap_name = cmap_name
+        self.n_steps = max(3, int(n_steps))
+
+    def create_artists(
+        self,
+        legend,
+        orig_handle,
+        xdescent,
+        ydescent,
+        width,
+        height,
+        fontsize,
+        trans,
+    ):
+        cmap = plt.get_cmap(self.cmap_name)
+        rect_width = width / float(self.n_steps)
+        artists = []
+        for idx in range(self.n_steps):
+            x0 = xdescent + idx * rect_width
+            rect = Rectangle(
+                (x0, ydescent + 0.15 * height),
+                rect_width,
+                0.70 * height,
+                transform=trans,
+                facecolor=cmap(idx / max(1, self.n_steps - 1)),
+                edgecolor="none",
+            )
+            artists.append(rect)
+
+        border = Rectangle(
+            (xdescent, ydescent + 0.15 * height),
+            width,
+            0.70 * height,
+            transform=trans,
+            facecolor="none",
+            edgecolor="#777777",
+            linewidth=0.6,
+        )
+        artists.append(border)
+        return artists
+
+
 def tukey_inliers(values: np.ndarray, whisker_scale: float = 1.5) -> np.ndarray:
     """
     Return the Tukey-IQR inliers used for the Monte Carlo summaries.
@@ -194,6 +254,24 @@ def summarize_effect_series(values: np.ndarray) -> tuple[float, float, float]:
         float(np.percentile(inliers, 25.0)),
         float(np.percentile(inliers, 75.0)),
     )
+
+
+def local_hidden_state_error(
+    x_true: np.ndarray,
+    m_smooth: np.ndarray,
+    *,
+    attack_t: int,
+) -> float:
+    """
+    Return the local hidden-state estimation error at the attacked time.
+
+    The local effect is measured as the L1 error between the true hidden state
+    `s_t` and its smoothed posterior mean at the attacked time, which we use as
+    a proxy for the local information lost by the estimator.
+    """
+    x_true = np.asarray(x_true, dtype=float)
+    m_smooth = np.asarray(m_smooth, dtype=float)
+    return float(np.sum(np.abs(x_true[attack_t] - m_smooth[attack_t])))
 
 
 def add_lambda_colorbar(
@@ -278,6 +356,17 @@ def binned_probability_summary(
     if true_prob.shape != estimated_prob.shape:
         raise ValueError("true_prob and estimated_prob must have the same shape")
 
+    finite_mask = np.isfinite(true_prob) & np.isfinite(estimated_prob)
+    true_prob = true_prob[finite_mask]
+    estimated_prob = estimated_prob[finite_mask]
+    if true_prob.size == 0:
+        return (
+            np.zeros(0, dtype=float),
+            np.zeros(0, dtype=float),
+            np.zeros(0, dtype=float),
+            np.zeros(0, dtype=float),
+        )
+
     bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
     x_vals: list[float] = []
     y_means: list[float] = []
@@ -345,6 +434,125 @@ def smooth_series(values: np.ndarray, window: int = 7) -> np.ndarray:
     return np.convolve(padded, kernel, mode="valid")
 
 
+def clipped_axis_limits(
+    values: np.ndarray,
+    *,
+    lower_bound: float,
+    upper_bound: float,
+    pad_ratio: float = 0.08,
+    min_span: float = 0.12,
+) -> tuple[float, float]:
+    """
+    Return padded y-limits clipped to a known admissible range.
+
+    The probability and rate panels benefit from a moderate zoom so the
+    defended curves are easier to compare, but the limits should still stay
+    inside the natural bounds of the plotted quantities.
+    """
+    values = np.asarray(values, dtype=float)
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return float(lower_bound), float(upper_bound)
+
+    data_min = float(np.min(finite_values))
+    data_max = float(np.max(finite_values))
+    span = max(data_max - data_min, min_span)
+    pad = pad_ratio * span
+    lower = max(float(lower_bound), data_min - pad)
+    upper = min(float(upper_bound), data_max + pad)
+
+    if upper - lower < min_span:
+        center = 0.5 * (lower + upper)
+        half_span = 0.5 * min_span
+        lower = max(float(lower_bound), center - half_span)
+        upper = min(float(upper_bound), center + half_span)
+
+    return float(lower), float(upper)
+
+
+def nice_percent_axis_upper(value: float) -> float:
+    """
+    Round a percentage upper bound up to a clean plotting limit.
+
+    Using round numbers makes the last panel easier to read than adding a
+    fixed margin that can land on awkward values such as 17.3 or 43.7.
+    """
+    value = max(2.0, float(value))
+    if value >= 100.0:
+        return 100.0
+
+    magnitude = 10.0 ** np.floor(np.log10(value))
+    for factor in (1.0, 1.5, 2.0, 2.5, 5.0, 10.0):
+        candidate = factor * magnitude
+        if candidate >= value:
+            return min(100.0, float(candidate))
+    return 100.0
+
+
+def mc_probability_cache_is_usable(
+    mc_data: dict[str, np.ndarray | float | int],
+    *,
+    n_lambda: int,
+) -> bool:
+    """
+    Return whether the cached Monte Carlo probability arrays are usable.
+
+    The first panel needs finite clean, attack, and defended probabilities.
+    If a previous run cached only NaNs because the Monte Carlo jobs failed,
+    the figure can look empty even though the cache keys still exist.
+    """
+    try:
+        true_prob = np.asarray(mc_data["true_prob"], dtype=float)
+        clean_prob = np.asarray(mc_data["clean_prob"], dtype=float)
+        attack_prob = np.asarray(mc_data["attack_prob"], dtype=float)
+        clean_adapt_prob = np.asarray(mc_data["clean_adapt_prob"], dtype=float)
+        adapt_prob = np.asarray(mc_data["adapt_prob"], dtype=float)
+    except KeyError:
+        return False
+
+    if clean_adapt_prob.ndim != 2 or adapt_prob.ndim != 2:
+        return False
+    if clean_adapt_prob.shape[0] != n_lambda or adapt_prob.shape[0] != n_lambda:
+        return False
+
+    finite_run_count = min(
+        int(np.isfinite(true_prob).sum()),
+        int(np.isfinite(clean_prob).sum()),
+        int(np.isfinite(attack_prob).sum()),
+    )
+    if finite_run_count == 0:
+        return False
+
+    defended_rows_ok = bool(np.all(np.sum(np.isfinite(adapt_prob), axis=1) > 0))
+    clean_defended_rows_ok = bool(np.all(np.sum(np.isfinite(clean_adapt_prob), axis=1) > 0))
+    return defended_rows_ok and clean_defended_rows_ok
+
+
+def evaluate_single_mc_g_run_from_task(
+    task: dict[str, int | float | np.ndarray | None],
+) -> dict[str, np.ndarray | float]:
+    """
+    Evaluate one Monte Carlo task from a plain dictionary payload.
+
+    Keeping the worker entry point at module scope makes it picklable for
+    `ProcessPoolExecutor`, which is the cleanest way to exploit Linux servers.
+    """
+    return evaluate_single_mc_g_run(
+        run_seed=int(task["run_seed"]),
+        T=int(task["T"]),
+        attack_t=int(task["attack_t"]),
+        coverage=float(task["coverage"]),
+        epsilon_override=None if task["epsilon_override"] is None else float(task["epsilon_override"]),
+        lambda_scales=np.asarray(task["lambda_scales"], dtype=float),
+        omega_h=float(task["omega_h"]),
+        omega_o=float(task["omega_o"]),
+        eta=float(task["eta"]),
+        n_steps=int(task["n_steps"]),
+        n_mc_opt=int(task["n_mc_opt"]),
+        n_mc_est=int(task["n_mc_est"]),
+    )
+
+
 # ============================================================
 # Covariance-adaptation filter for the 3D nonlinear example
 # ============================================================
@@ -364,7 +572,7 @@ def kalman_filter_with_online_covariance_adaptation_3d(
     lam: float,
     omega_h: float,
     omega_o: float,
-    delta_threshold: float,
+    posterior_attack_threshold: float = DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
     direction_eps: float = 1e-10,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """
@@ -373,6 +581,9 @@ def kalman_filter_with_online_covariance_adaptation_3d(
     Unlike the earlier AdvSSM helper, this version follows the `u` indexing
     convention used by `AttackSense3D.py`, where controls have shape `(T+1,n_u)`
     and the transition from `k` to `k+1` uses `u[k]`.
+
+    In this thresholded variant, the covariance adaptation is activated only
+    when the posterior attack probability `gamma_t` exceeds 0.5.
     """
     T = y.shape[0] - 1
     n_x = P0.shape[0]
@@ -436,7 +647,7 @@ def kalman_filter_with_online_covariance_adaptation_3d(
                 log_p0 = gaussian_logpdf(y[k], y_hat, S_nom)
                 log_p1 = gaussian_logpdf(y[k], mu_poe, Sigma_poe)
                 gamma_t = log_mix_posterior_weight(pi_t, log_p0, log_p1)
-                bar_gamma_t = gamma_t if gamma_t >= delta_threshold else 0.0
+                bar_gamma_t = gamma_t if gamma_t > posterior_attack_threshold else 0.0
 
                 V_tilde = rank_one_covariance_update(Rk, lam, u_dir, weight=bar_gamma_t)
                 S_tilde = rank_one_covariance_update(S_nom, lam, u_dir, weight=bar_gamma_t)
@@ -513,9 +724,14 @@ def build_attack_on_g(
     eta: float,
     n_steps: int,
     n_mc_opt: int,
+    clean_true_g_value: float | None = None,
+    call_threshold: float = DEFAULT_CALL_THRESHOLD,
 ) -> dict[str, np.ndarray | float]:
     """
-    Build the last-time attacked observation using the 3D nonlinear objective.
+    Build the attacked observation for the last time step.
+
+    The perturbation is always optimized to push the hidden-state risk upward
+    toward `g(s_t) = 1`, regardless of the clean pre-attack risk level.
     """
     y_star, history = white_box_point_attack_nd(
         t=attack_t,
@@ -560,7 +776,6 @@ def evaluate_reference_g_lambda_sweep(
     lambda_scales: np.ndarray,
     omega_h: float,
     omega_o: float,
-    delta_threshold: float,
     eta: float,
     n_steps: int,
     n_mc_opt: int,
@@ -595,6 +810,7 @@ def evaluate_reference_g_lambda_sweep(
         u_high=0.5,
     )
 
+    clean_true_g_value = float(g_scalar(x_true[attack_t]))
     attack_data = build_attack_on_g(
         y_clean=y_clean,
         u_controls=u_controls,
@@ -607,8 +823,10 @@ def evaluate_reference_g_lambda_sweep(
         eta=eta,
         n_steps=n_steps,
         n_mc_opt=n_mc_opt,
+        clean_true_g_value=clean_true_g_value,
+        call_threshold=DEFAULT_CALL_THRESHOLD,
     )
-    y_adv = np.asarray(attack_data["y_adv"], dtype=float)
+    y_adv_candidate = np.asarray(attack_data["y_adv"], dtype=float)
 
     clean_filt = kalman_filter_nd(
         y=y_clean,
@@ -623,7 +841,7 @@ def evaluate_reference_g_lambda_sweep(
         P0=pars["P0"],
     )
     attack_filt = kalman_filter_nd(
-        y=y_adv,
+        y=y_adv_candidate,
         u=u_controls,
         A_t=mats["A_t"],
         B_t=mats["B_t"],
@@ -644,7 +862,7 @@ def evaluate_reference_g_lambda_sweep(
         attack_t=attack_t,
         n_mc_est=n_mc_est,
     )
-    attack_m, _, attack_prob = compute_smoothed_probability(
+    attack_m_candidate, _, attack_prob_candidate = compute_smoothed_probability(
         m_filt=attack_filt[0],
         P_filt=attack_filt[1],
         m_pred=attack_filt[2],
@@ -653,6 +871,12 @@ def evaluate_reference_g_lambda_sweep(
         attack_t=attack_t,
         n_mc_est=n_mc_est,
     )
+
+    attack_is_upward = bool(attack_prob_candidate > clean_prob + DEFAULT_UPWARD_ATTACK_TOL)
+    y_adv = y_adv_candidate
+    attack_target = np.asarray(attack_data["adv_target"], dtype=float)
+    attack_m = attack_m_candidate
+    attack_prob = attack_prob_candidate
 
     lambda_max = lambda_max_from_observation_covariance(mats["R_t"][attack_t])
     lambda_values = lambda_scales * lambda_max
@@ -671,11 +895,10 @@ def evaluate_reference_g_lambda_sweep(
             R_t=mats["R_t"],
             m0=pars["m0"],
             P0=pars["P0"],
-            attack_targets={attack_t: np.asarray(attack_data["adv_target"], dtype=float)},
+            attack_targets={attack_t: attack_target},
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
-            delta_threshold=delta_threshold,
         )
         adapt_means[lam_idx], _, adapt_prob[lam_idx] = compute_smoothed_probability(
             m_filt=adapt_filt[0],
@@ -700,10 +923,12 @@ def evaluate_reference_g_lambda_sweep(
         "clean_m": clean_m,
         "attack_m": attack_m,
         "adapt_means": adapt_means,
+        "posterior_attack_threshold": DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
         "true_prob": np.array([float(g_scalar(x_true[attack_t]))], dtype=float),
         "clean_prob": np.array([clean_prob], dtype=float),
         "attack_prob": np.array([attack_prob], dtype=float),
         "adapt_prob": adapt_prob,
+        "attack_applied": np.array([1.0 if attack_is_upward else 0.0], dtype=float),
     }
 
 
@@ -717,7 +942,6 @@ def evaluate_single_mc_g_run(
     lambda_scales: np.ndarray,
     omega_h: float,
     omega_o: float,
-    delta_threshold: float,
     eta: float,
     n_steps: int,
     n_mc_opt: int,
@@ -749,6 +973,7 @@ def evaluate_single_mc_g_run(
         u_high=0.5,
     )
 
+    clean_true_g_value = float(g_scalar(x_true[attack_t]))
     attack_data = build_attack_on_g(
         y_clean=y_clean,
         u_controls=u_controls,
@@ -761,8 +986,10 @@ def evaluate_single_mc_g_run(
         eta=eta,
         n_steps=n_steps,
         n_mc_opt=n_mc_opt,
+        clean_true_g_value=clean_true_g_value,
+        call_threshold=DEFAULT_CALL_THRESHOLD,
     )
-    y_adv = np.asarray(attack_data["y_adv"], dtype=float)
+    y_adv_candidate = np.asarray(attack_data["y_adv"], dtype=float)
 
     true_prob = float(g_scalar(x_true[attack_t]))
     lambda_max = lambda_max_from_observation_covariance(mats["R_t"][attack_t])
@@ -781,7 +1008,7 @@ def evaluate_single_mc_g_run(
         P0=pars["P0"],
     )
     attack_filt = kalman_filter_nd(
-        y=y_adv,
+        y=y_adv_candidate,
         u=u_controls,
         A_t=mats["A_t"],
         B_t=mats["B_t"],
@@ -793,7 +1020,7 @@ def evaluate_single_mc_g_run(
         P0=pars["P0"],
     )
 
-    _, _, clean_prob = compute_smoothed_probability(
+    clean_smooth, _, clean_prob = compute_smoothed_probability(
         m_filt=clean_filt[0],
         P_filt=clean_filt[1],
         m_pred=clean_filt[2],
@@ -802,7 +1029,7 @@ def evaluate_single_mc_g_run(
         attack_t=attack_t,
         n_mc_est=n_mc_est,
     )
-    _, _, attack_prob = compute_smoothed_probability(
+    attack_smooth, _, attack_prob_candidate = compute_smoothed_probability(
         m_filt=attack_filt[0],
         P_filt=attack_filt[1],
         m_pred=attack_filt[2],
@@ -812,8 +1039,17 @@ def evaluate_single_mc_g_run(
         n_mc_est=n_mc_est,
     )
 
+    attack_is_upward = bool(attack_prob_candidate > clean_prob + DEFAULT_UPWARD_ATTACK_TOL)
+    y_adv = y_adv_candidate
+    attack_target = np.asarray(attack_data["adv_target"], dtype=float)
+    attack_prob = attack_prob_candidate
+
+    clean_local_error = local_hidden_state_error(x_true, clean_smooth, attack_t=attack_t)
+    attack_local_error = local_hidden_state_error(x_true, attack_smooth, attack_t=attack_t)
     clean_adapt_prob = np.zeros(lambda_scales.size, dtype=float)
     adapt_prob = np.zeros(lambda_scales.size, dtype=float)
+    clean_adapt_local_error = np.zeros(lambda_scales.size, dtype=float)
+    adapt_local_error = np.zeros(lambda_scales.size, dtype=float)
     for lam_idx, lam in enumerate(lambda_values):
         clean_adapt_filt = kalman_filter_with_online_covariance_adaptation_3d(
             y=y_clean,
@@ -826,11 +1062,10 @@ def evaluate_single_mc_g_run(
             R_t=mats["R_t"],
             m0=pars["m0"],
             P0=pars["P0"],
-            attack_targets={attack_t: np.asarray(attack_data["adv_target"], dtype=float)},
+            attack_targets={attack_t: attack_target},
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
-            delta_threshold=delta_threshold,
         )
         adapt_filt = kalman_filter_with_online_covariance_adaptation_3d(
             y=y_adv,
@@ -843,13 +1078,12 @@ def evaluate_single_mc_g_run(
             R_t=mats["R_t"],
             m0=pars["m0"],
             P0=pars["P0"],
-            attack_targets={attack_t: np.asarray(attack_data["adv_target"], dtype=float)},
+            attack_targets={attack_t: attack_target},
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
-            delta_threshold=delta_threshold,
         )
-        _, _, clean_adapt_prob[lam_idx] = compute_smoothed_probability(
+        clean_adapt_smooth, _, clean_adapt_prob[lam_idx] = compute_smoothed_probability(
             m_filt=clean_adapt_filt[0],
             P_filt=clean_adapt_filt[1],
             m_pred=clean_adapt_filt[2],
@@ -858,7 +1092,7 @@ def evaluate_single_mc_g_run(
             attack_t=attack_t,
             n_mc_est=n_mc_est,
         )
-        _, _, adapt_prob[lam_idx] = compute_smoothed_probability(
+        adapt_smooth, _, adapt_prob[lam_idx] = compute_smoothed_probability(
             m_filt=adapt_filt[0],
             P_filt=adapt_filt[1],
             m_pred=adapt_filt[2],
@@ -867,13 +1101,29 @@ def evaluate_single_mc_g_run(
             attack_t=attack_t,
             n_mc_est=n_mc_est,
         )
+        clean_adapt_local_error[lam_idx] = local_hidden_state_error(
+            x_true,
+            clean_adapt_smooth,
+            attack_t=attack_t,
+        )
+        adapt_local_error[lam_idx] = local_hidden_state_error(
+            x_true,
+            adapt_smooth,
+            attack_t=attack_t,
+        )
 
     return {
         "true_prob": true_prob,
         "clean_prob": clean_prob,
         "attack_prob": attack_prob,
+        "clean_local_error": clean_local_error,
+        "attack_local_error": attack_local_error,
+        "posterior_attack_threshold": DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
         "clean_adapt_prob": clean_adapt_prob,
         "adapt_prob": adapt_prob,
+        "clean_adapt_local_error": clean_adapt_local_error,
+        "adapt_local_error": adapt_local_error,
+        "attack_applied": float(1.0 if attack_is_upward else 0.0),
     }
 
 
@@ -887,48 +1137,123 @@ def run_monte_carlo_g_lambda_sweep(
     lambda_scales: np.ndarray,
     omega_h: float,
     omega_o: float,
-    delta_threshold: float,
     eta: float,
     n_steps: int,
     n_mc_opt: int,
     n_mc_est: int,
     base_seed: int,
+    n_jobs: int,
 ) -> dict[str, np.ndarray | float | int]:
     """
     Run the Monte Carlo comparison for the nonlinear `g`-attack case.
+
+    The main acceleration comes from parallelizing across independent Monte
+    Carlo seeds. Each worker computes one full random system and returns the
+    aggregated results for all lambda values.
     """
     true_prob = np.full(N_runs, np.nan, dtype=float)
     clean_prob = np.full(N_runs, np.nan, dtype=float)
     attack_prob = np.full(N_runs, np.nan, dtype=float)
+    attack_applied = np.full(N_runs, np.nan, dtype=float)
+    clean_local_error = np.full(N_runs, np.nan, dtype=float)
+    attack_local_error = np.full(N_runs, np.nan, dtype=float)
     clean_adapt_prob = np.full((lambda_scales.size, N_runs), np.nan, dtype=float)
     adapt_prob = np.full((lambda_scales.size, N_runs), np.nan, dtype=float)
+    clean_adapt_local_error = np.full((lambda_scales.size, N_runs), np.nan, dtype=float)
+    adapt_local_error = np.full((lambda_scales.size, N_runs), np.nan, dtype=float)
 
+    tasks: list[dict[str, int | float | np.ndarray | None]] = []
     for run_idx in range(N_runs):
         run_seed = base_seed + 1000 * run_idx
-        print(f"[MC-g] run {run_idx + 1}/{N_runs} (seed={run_seed})")
+        tasks.append(
+            {
+                "run_seed": run_seed,
+                "T": T,
+                "attack_t": attack_t,
+                "coverage": coverage,
+                "epsilon_override": epsilon_override,
+                "lambda_scales": np.asarray(lambda_scales, dtype=float),
+                "omega_h": omega_h,
+                "omega_o": omega_o,
+                "eta": eta,
+                "n_steps": n_steps,
+                "n_mc_opt": n_mc_opt,
+                "n_mc_est": n_mc_est,
+            }
+        )
+
+    max_workers = max(1, min(int(n_jobs), N_runs))
+    if max_workers == 1:
+        for run_idx, task in enumerate(tasks):
+            run_seed = int(task["run_seed"])
+            if (run_idx + 1) % 25 == 0 or run_idx == N_runs - 1:
+                print(f"[MC-g] run {run_idx + 1}/{N_runs} (seed={run_seed})")
+            try:
+                result = evaluate_single_mc_g_run_from_task(task)
+                true_prob[run_idx] = float(result["true_prob"])
+                clean_prob[run_idx] = float(result["clean_prob"])
+                attack_prob[run_idx] = float(result["attack_prob"])
+                attack_applied[run_idx] = float(result["attack_applied"])
+                clean_local_error[run_idx] = float(result["clean_local_error"])
+                attack_local_error[run_idx] = float(result["attack_local_error"])
+                clean_adapt_prob[:, run_idx] = np.asarray(result["clean_adapt_prob"], dtype=float)
+                adapt_prob[:, run_idx] = np.asarray(result["adapt_prob"], dtype=float)
+                clean_adapt_local_error[:, run_idx] = np.asarray(result["clean_adapt_local_error"], dtype=float)
+                adapt_local_error[:, run_idx] = np.asarray(result["adapt_local_error"], dtype=float)
+            except Exception as exc:
+                print(f"[WARN seed={run_seed}] {type(exc).__name__}: {exc}")
+    else:
+        print(f"[MC-g] running {N_runs} Monte Carlo tasks with {max_workers} workers")
+        mp_context = mp.get_context("fork") if "fork" in mp.get_all_start_methods() else None
+        completed_count = 0
         try:
-            result = evaluate_single_mc_g_run(
-                run_seed=run_seed,
-                T=T,
-                attack_t=attack_t,
-                coverage=coverage,
-                epsilon_override=epsilon_override,
-                lambda_scales=lambda_scales,
-                omega_h=omega_h,
-                omega_o=omega_o,
-                delta_threshold=delta_threshold,
-                eta=eta,
-                n_steps=n_steps,
-                n_mc_opt=n_mc_opt,
-                n_mc_est=n_mc_est,
+            with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_context) as executor:
+                future_to_meta = {
+                    executor.submit(evaluate_single_mc_g_run_from_task, task): (run_idx, int(task["run_seed"]))
+                    for run_idx, task in enumerate(tasks)
+                }
+                for future in as_completed(future_to_meta):
+                    run_idx, run_seed = future_to_meta[future]
+                    completed_count += 1
+                    if completed_count % 10 == 0 or completed_count == N_runs:
+                        print(f"[MC-g] completed {completed_count}/{N_runs} (seed={run_seed})")
+                    try:
+                        result = future.result()
+                        true_prob[run_idx] = float(result["true_prob"])
+                        clean_prob[run_idx] = float(result["clean_prob"])
+                        attack_prob[run_idx] = float(result["attack_prob"])
+                        attack_applied[run_idx] = float(result["attack_applied"])
+                        clean_local_error[run_idx] = float(result["clean_local_error"])
+                        attack_local_error[run_idx] = float(result["attack_local_error"])
+                        clean_adapt_prob[:, run_idx] = np.asarray(result["clean_adapt_prob"], dtype=float)
+                        adapt_prob[:, run_idx] = np.asarray(result["adapt_prob"], dtype=float)
+                        clean_adapt_local_error[:, run_idx] = np.asarray(result["clean_adapt_local_error"], dtype=float)
+                        adapt_local_error[:, run_idx] = np.asarray(result["adapt_local_error"], dtype=float)
+                    except Exception as exc:
+                        print(f"[WARN seed={run_seed}] {type(exc).__name__}: {exc}")
+        except (OSError, PermissionError) as exc:
+            print(
+                f"[MC-g] parallel execution unavailable ({type(exc).__name__}: {exc}); "
+                "falling back to sequential mode."
             )
-            true_prob[run_idx] = float(result["true_prob"])
-            clean_prob[run_idx] = float(result["clean_prob"])
-            attack_prob[run_idx] = float(result["attack_prob"])
-            clean_adapt_prob[:, run_idx] = np.asarray(result["clean_adapt_prob"], dtype=float)
-            adapt_prob[:, run_idx] = np.asarray(result["adapt_prob"], dtype=float)
-        except Exception as exc:
-            print(f"[WARN seed={run_seed}] {type(exc).__name__}: {exc}")
+            for run_idx, task in enumerate(tasks):
+                run_seed = int(task["run_seed"])
+                if (run_idx + 1) % 10 == 0 or run_idx == N_runs - 1:
+                    print(f"[MC-g] run {run_idx + 1}/{N_runs} (seed={run_seed})")
+                try:
+                    result = evaluate_single_mc_g_run_from_task(task)
+                    true_prob[run_idx] = float(result["true_prob"])
+                    clean_prob[run_idx] = float(result["clean_prob"])
+                    attack_prob[run_idx] = float(result["attack_prob"])
+                    attack_applied[run_idx] = float(result["attack_applied"])
+                    clean_local_error[run_idx] = float(result["clean_local_error"])
+                    attack_local_error[run_idx] = float(result["attack_local_error"])
+                    clean_adapt_prob[:, run_idx] = np.asarray(result["clean_adapt_prob"], dtype=float)
+                    adapt_prob[:, run_idx] = np.asarray(result["adapt_prob"], dtype=float)
+                    clean_adapt_local_error[:, run_idx] = np.asarray(result["clean_adapt_local_error"], dtype=float)
+                    adapt_local_error[:, run_idx] = np.asarray(result["adapt_local_error"], dtype=float)
+                except Exception as exc:
+                    print(f"[WARN seed={run_seed}] {type(exc).__name__}: {exc}")
 
     clean_abs_error = np.abs(clean_prob - true_prob)
     attack_abs_error = np.abs(attack_prob - true_prob)
@@ -941,11 +1266,18 @@ def run_monte_carlo_g_lambda_sweep(
         "coverage": coverage,
         "epsilon": float(epsilon_override) if epsilon_override is not None else coverage_to_epsilon(coverage),
         "lambda_scales": lambda_scales,
+        "posterior_attack_threshold": DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
+        "n_jobs": max_workers,
         "true_prob": true_prob,
         "clean_prob": clean_prob,
         "attack_prob": attack_prob,
+        "attack_applied": attack_applied,
+        "clean_local_error": clean_local_error,
+        "attack_local_error": attack_local_error,
         "clean_adapt_prob": clean_adapt_prob,
         "adapt_prob": adapt_prob,
+        "clean_adapt_local_error": clean_adapt_local_error,
+        "adapt_local_error": adapt_local_error,
         "clean_abs_error": clean_abs_error,
         "attack_abs_error": attack_abs_error,
         "adapt_abs_error": adapt_abs_error,
@@ -967,6 +1299,10 @@ def plot_g_call_summary_vs_lambda(
     right_attack_prob: np.ndarray,
     right_clean_adapt_prob: np.ndarray,
     right_adapt_prob: np.ndarray,
+    right_clean_local_error: np.ndarray,
+    right_attack_local_error: np.ndarray,
+    right_clean_adapt_local_error: np.ndarray,
+    right_adapt_local_error: np.ndarray,
     right_epsilon: float,
     lambda_scales: np.ndarray,
     call_threshold: float,
@@ -989,15 +1325,24 @@ def plot_g_call_summary_vs_lambda(
     right_attack_prob = np.asarray(right_attack_prob, dtype=float)
     right_clean_adapt_prob = np.asarray(right_clean_adapt_prob, dtype=float)
     right_adapt_prob = np.asarray(right_adapt_prob, dtype=float)
+    right_clean_local_error = np.asarray(right_clean_local_error, dtype=float)
+    right_attack_local_error = np.asarray(right_attack_local_error, dtype=float)
+    right_clean_adapt_local_error = np.asarray(right_clean_adapt_local_error, dtype=float)
+    right_adapt_local_error = np.asarray(right_adapt_local_error, dtype=float)
     lambda_scales = np.asarray(lambda_scales, dtype=float)
 
     colors = lambda_colors(lambda_scales)
     clean_color = "#525252"
     attack_color = "#D98F8F"
     n_bins = max(30, min(40, left_clean_prob.size // 2 if left_clean_prob.size >= 12 else left_clean_prob.size))
-
-    fig, axes = plt.subplots(1, 2, figsize=(15.8, 5.9), constrained_layout=True)
-    ax_prob, ax_calls = axes
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(23.6, 5.9),
+        constrained_layout=True,
+        gridspec_kw={"width_ratios": [1.28, 1.0, 1.0]},
+    )
+    ax_prob, ax_attack_metrics, ax_clean_metrics = axes
     for ax in axes:
         style_axis(ax)
 
@@ -1008,7 +1353,7 @@ def plot_g_call_summary_vs_lambda(
         color=clean_color,
         linewidth=2.0,
         linestyle="--",
-        label="Clean mean",
+        label="Non-attacked mean",
         zorder=3,
     )
 
@@ -1033,7 +1378,7 @@ def plot_g_call_summary_vs_lambda(
         attack_mean,
         color=attack_color,
         linewidth=1.9,
-        label="Attack mean",
+        label="Attacked mean",
         zorder=3,
     )
 
@@ -1072,24 +1417,25 @@ def plot_g_call_summary_vs_lambda(
         label="Call threshold",
         zorder=2,
     )
-    ax_prob.set_xlabel(r"Real clean probability $g(s_T)$")
-    ax_prob.set_ylabel(r"Estimated call probability $\mathbb{E}[g(s_T)\mid o_{0:T}]$")
+    ax_prob.set_xlabel(r"Actual $g(s_T)$")
+    ax_prob.set_ylabel(r"Estimated $\mathbb{E}[g(s_T)\mid o_{0:T}]$")
     ax_prob.set_xlim(0.0, 1.0)
     ax_prob.set_ylim(-0.02, 1.02)
+    ax_prob.set_yticks(np.linspace(0.0, 1.0, 6))
     ax_prob.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
     ax_prob.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
-    ax_prob.text(
-        0.03,
-        0.97,
-        rf"$\epsilon={left_epsilon:.2f}$",
-        transform=ax_prob.transAxes,
-        ha="left",
-        va="top",
-        fontsize=10,
-        bbox=dict(facecolor="white", edgecolor="#D0D0D0", alpha=0.92, boxstyle="round,pad=0.25"),
+    lambda_legend_note = MiniScaleLegendHandle()
+    prob_handles, prob_labels = ax_prob.get_legend_handles_labels()
+    ax_prob.legend(
+        prob_handles + [lambda_legend_note],
+        prob_labels + [r"$\lambda$ scale"],
+        loc="lower right",
+        frameon=True,
+        framealpha=1.0,
+        fontsize=10.8,
+        handler_map={MiniScaleLegendHandle: HandlerMiniScale()},
     )
-    ax_prob.legend(loc="lower right", frameon=True, framealpha=0.95)
-    add_lambda_colorbar(fig=fig, axes=[ax_prob, ax_calls], lambda_scales=lambda_scales)
+    add_lambda_colorbar(fig=fig, axes=[ax_prob], lambda_scales=lambda_scales)
 
     true_calls = right_true_prob > call_threshold
     clean_calls = right_clean_prob > call_threshold
@@ -1180,120 +1526,329 @@ def plot_g_call_summary_vs_lambda(
         positive_false_negative_rate_pct,
         window=smooth_window_calls,
     )
+    positive_clean_local_effect = np.nanmean(right_clean_adapt_local_error[:, :], axis=1)[positive_mask]
+    positive_attack_local_effect = np.nanmean(right_adapt_local_error[:, :], axis=1)[positive_mask]
+    plot_clean_local_effect = smooth_series(positive_clean_local_effect, window=smooth_window_calls)
+    plot_attack_local_effect = smooth_series(positive_attack_local_effect, window=smooth_window_calls)
+    clean_local_effect_baseline = float(np.nanmean(right_clean_local_error))
+    attack_local_effect_baseline = float(np.nanmean(right_attack_local_error))
 
-    ax_calls.plot(
-        positive_lambda_scales,
-        plot_clean_false_over_total_pct,
-        color="#6EA7C6",
-        marker="o",
-        linewidth=1.9,
-        markersize=5.2,
-        linestyle="--",
-        label="Clean + cov-adapt false positive rate",
-        zorder=3,
-    )
-    ax_calls.plot(
-        positive_lambda_scales,
-        plot_clean_false_negative_rate_pct,
-        color="#6F79C9",
-        marker="s",
-        linewidth=1.8,
-        markersize=4.8,
-        linestyle="--",
-        label="Clean + cov-adapt false negative rate",
-        zorder=3,
-    )
-    ax_calls.plot(
-        positive_lambda_scales,
-        plot_false_over_total_pct,
-        color="#7FB26A",
-        marker="o",
-        linewidth=2.2,
-        markersize=6.0,
-        label="Cov-adapt false positive rate",
-        zorder=3,
-    )
-    ax_calls.plot(
-        positive_lambda_scales,
-        plot_false_negative_rate_pct,
-        color="#5B84C4",
-        marker="s",
-        linewidth=2.0,
-        markersize=5.4,
-        label="Cov-adapt false negative rate",
-        zorder=3,
-    )
-    ax_calls.axhline(
-        clean_false_positive_rate,
-        color=clean_color,
-        linewidth=1.4,
-        linestyle="--",
-        alpha=0.9,
-        label="Clean false positive rate",
-        zorder=2,
-    )
-    ax_calls.axhline(
-        attack_false_positive_rate,
-        color=attack_color,
-        linewidth=1.4,
-        linestyle="--",
-        alpha=0.9,
-        label="Attack false positive rate",
-        zorder=2,
-    )
-    ax_calls.axhline(
-        clean_false_negative_rate,
-        color="#6A6A6A",
-        linewidth=1.2,
-        linestyle=":",
-        alpha=0.92,
-        label="Clean false negative rate",
-        zorder=2,
-    )
-    ax_calls.axhline(
-        attack_false_negative_rate,
-        color="#C46D61",
-        linewidth=1.2,
-        linestyle=":",
-        alpha=0.92,
-        label="Attack false negative rate",
-        zorder=2,
-    )
+    def draw_metrics_panel(
+        *,
+        ax_rate: plt.Axes,
+        panel_label: str,
+        baseline_false_positive_rate: float,
+        defended_false_positive_rate: np.ndarray,
+        baseline_false_negative_rate: float,
+        defended_false_negative_rate: np.ndarray,
+        baseline_local_effect: float,
+        defended_local_effect: np.ndarray,
+        false_positive_baseline_label: str,
+        false_positive_curve_label: str,
+        false_negative_baseline_label: str,
+        false_negative_curve_label: str,
+        local_baseline_label: str,
+        local_curve_label: str,
+        rate_baseline_color: str,
+        rate_curve_positive_color: str,
+        rate_curve_negative_color: str,
+        local_baseline_color: str,
+        local_curve_color: str,
+        right_side_labels: tuple[str, ...] = (),
+        rate_lower_override: float | None = None,
+        upper_legend_y: float = 0.98,
+        lower_legend_y: float = 0.84,
+        upper_legend_fill_alpha: float = 1.0,
+        lower_legend_fill_alpha: float = 1.0,
+        local_baseline_xmax: float | None = None,
+    ) -> None:
+        """Draw one lambda panel with rates on the left axis and local effect on the right axis."""
+        ax_local = ax_rate.twinx()
+        style_axis(ax_rate)
+        ax_local.spines["top"].set_visible(False)
+        ax_local.grid(False)
+        x_text_left = float(positive_lambda_scales[0]) * 1.03
+        x_text_right = float(np.max(positive_lambda_scales)) / 1.03
+        legend_frame_alpha = 1.0
+        legend_edge_alpha = 1.0
 
-    ax_calls.set_xscale("log")
-    ax_calls.set_xlim(
-        float(np.min(positive_lambda_scales)) * 0.92,
-        float(np.max(positive_lambda_scales)) * 1.08,
+        fp_curve_handle = ax_rate.plot(
+            positive_lambda_scales,
+            defended_false_positive_rate,
+            color=rate_curve_positive_color,
+            marker="o",
+            markersize=5.2,
+            linewidth=1.9,
+            label=false_positive_curve_label,
+            zorder=3,
+        )[0]
+        fn_curve_handle = ax_rate.plot(
+            positive_lambda_scales,
+            defended_false_negative_rate,
+            color=rate_curve_negative_color,
+            marker="s",
+            markersize=4.9,
+            linewidth=1.9,
+            label=false_negative_curve_label,
+            zorder=3,
+        )[0]
+        fp_base_handle = ax_rate.axhline(
+            baseline_false_positive_rate,
+            color=rate_baseline_color,
+            linewidth=1.55,
+            linestyle="--",
+            alpha=1.0,
+            label=false_positive_baseline_label,
+            zorder=2,
+        )
+        fn_base_handle = ax_rate.axhline(
+            baseline_false_negative_rate,
+            color=rate_baseline_color,
+            linewidth=1.35,
+            linestyle=":",
+            alpha=1.0,
+            label=false_negative_baseline_label,
+            zorder=2,
+        )
+
+        local_curve_handle = ax_local.plot(
+            positive_lambda_scales,
+            defended_local_effect,
+            color=local_curve_color,
+            marker="D",
+            markersize=5.2,
+            markerfacecolor="white",
+            markeredgewidth=1.1,
+            linewidth=2.2,
+            linestyle="-.",
+            label=local_curve_label,
+            zorder=4,
+        )[0]
+        local_baseline_line_x = positive_lambda_scales
+        if local_baseline_xmax is not None:
+            local_baseline_line_x = positive_lambda_scales[
+                positive_lambda_scales <= float(local_baseline_xmax)
+            ]
+            if local_baseline_line_x.size == 0:
+                local_baseline_line_x = np.array(
+                    [float(np.min(positive_lambda_scales)), float(local_baseline_xmax)],
+                    dtype=float,
+                )
+            elif local_baseline_line_x[-1] < float(local_baseline_xmax):
+                local_baseline_line_x = np.append(local_baseline_line_x, float(local_baseline_xmax))
+        local_base_handle = ax_local.plot(
+            local_baseline_line_x,
+            np.full(local_baseline_line_x.shape, baseline_local_effect, dtype=float),
+            color=local_baseline_color,
+            linewidth=1.7,
+            linestyle="--",
+            alpha=1.0,
+            label=local_baseline_label,
+            zorder=2,
+        )[0]
+
+        ax_rate.set_xscale("log")
+        ax_rate.set_xlim(
+            float(np.min(positive_lambda_scales)) * 0.92,
+            float(np.max(positive_lambda_scales)) * 1.08,
+        )
+        ax_rate.xaxis.set_major_locator(mticker.FixedLocator(positive_lambda_scales))
+        ax_rate.xaxis.set_major_formatter(mticker.FixedFormatter([f"{scale:g}" for scale in positive_lambda_scales]))
+        ax_rate.xaxis.set_minor_locator(mticker.NullLocator())
+        ax_rate.minorticks_off()
+        ax_local.minorticks_off()
+        ax_rate.set_xlabel(r"$c$ in $\lambda = c\,\lambda_{\max}$")
+        ax_rate.set_ylabel("False positive / negative rate (%)")
+        ax_local.set_ylabel(r"Lost information on $s_t$ (local effect)")
+
+        max_rate = max(
+            float(np.max(defended_false_positive_rate)) if defended_false_positive_rate.size > 0 else 0.0,
+            float(np.max(defended_false_negative_rate)) if defended_false_negative_rate.size > 0 else 0.0,
+            baseline_false_positive_rate,
+            baseline_false_negative_rate,
+            2.0,
+        )
+        min_rate = min(
+            float(np.min(defended_false_positive_rate)) if defended_false_positive_rate.size > 0 else baseline_false_positive_rate,
+            float(np.min(defended_false_negative_rate)) if defended_false_negative_rate.size > 0 else baseline_false_negative_rate,
+            baseline_false_positive_rate,
+            baseline_false_negative_rate,
+        )
+        rate_upper = nice_percent_axis_upper(1.10 * max_rate)
+        if rate_lower_override is not None:
+            rate_lower = rate_lower_override
+        elif panel_label == "Clean case":
+            rate_lower = max(0.0, min_rate - 0.10 * max(1.0, max_rate - min_rate))
+        else:
+            rate_lower = 0.0
+        ax_rate.set_ylim(rate_lower, rate_upper)
+        ax_rate.set_yticks(np.linspace(rate_lower, rate_upper, 6))
+
+        max_local_effect = max(
+            float(np.max(defended_local_effect)) if defended_local_effect.size > 0 else 0.0,
+            baseline_local_effect,
+            1e-6,
+        )
+        min_local_effect = min(
+            float(np.min(defended_local_effect)) if defended_local_effect.size > 0 else baseline_local_effect,
+            baseline_local_effect,
+        )
+        if panel_label == "Clean case":
+            local_lower = max(0.0, min_local_effect - 0.10 * max(1e-6, max_local_effect - min_local_effect))
+        else:
+            local_lower = 0.0
+        ax_local.set_ylim(local_lower, max_local_effect * 1.12)
+
+        rate_label_offset = 0.008 * max(rate_upper - rate_lower, 1.0)
+        local_label_offset = 0.012 * max(max_local_effect * 1.12 - local_lower, 1e-6)
+
+        def place_line_label(
+            axis: plt.Axes,
+            y_value: float,
+            text: str,
+            color: str,
+            vertical_offset: float,
+            side: str = "left",
+        ) -> None:
+            """Place a horizontal-line label near the chosen side of the panel."""
+            if side == "right":
+                x_value = x_text_right
+                horizontal_alignment = "right"
+            else:
+                x_value = x_text_left
+                horizontal_alignment = "left"
+            axis.text(
+                x_value,
+                y_value + vertical_offset,
+                text,
+                color=color,
+                fontsize=8.5,
+                fontweight="semibold",
+                ha=horizontal_alignment,
+                va="bottom",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=1.0, pad=0.12),
+            )
+
+        false_positive_side = "right" if "false_positive" in right_side_labels else "left"
+        false_negative_side = "right" if "false_negative" in right_side_labels else "left"
+        local_effect_side = "right" if "local_effect" in right_side_labels else "left"
+        place_line_label(
+            ax_rate,
+            baseline_false_positive_rate,
+            false_positive_baseline_label,
+            rate_baseline_color,
+            rate_label_offset,
+            side=false_positive_side,
+        )
+        place_line_label(
+            ax_rate,
+            baseline_false_negative_rate,
+            false_negative_baseline_label,
+            rate_baseline_color,
+            rate_label_offset,
+            side=false_negative_side,
+        )
+        place_line_label(
+            ax_local,
+            baseline_local_effect,
+            local_baseline_label,
+            local_baseline_color,
+            local_label_offset,
+            side=local_effect_side,
+        )
+
+        rate_handles = [
+            fp_curve_handle,
+            fn_curve_handle,
+        ]
+        rate_labels = [handle.get_label() for handle in rate_handles]
+        rate_legend = ax_rate.legend(
+            rate_handles,
+            rate_labels,
+            loc="upper right",
+            bbox_to_anchor=(0.98, upper_legend_y),
+            frameon=True,
+            framealpha=legend_frame_alpha,
+            borderpad=0.40,
+            labelspacing=0.52,
+            handletextpad=0.55,
+            fontsize=10.5,
+            title="Left axis",
+            title_fontsize=10.5,
+        )
+        rate_legend.get_frame().set_facecolor("white")
+        rate_legend.get_frame().set_alpha(upper_legend_fill_alpha)
+        rate_legend.get_frame().set_edgecolor((0.70, 0.70, 0.70, legend_edge_alpha))
+        ax_rate.add_artist(rate_legend)
+
+        local_handles = [
+            local_curve_handle,
+        ]
+        local_labels = [handle.get_label() for handle in local_handles]
+        local_legend = ax_rate.legend(
+            local_handles,
+            local_labels,
+            loc="upper right",
+            bbox_to_anchor=(0.98, lower_legend_y),
+            frameon=True,
+            framealpha=legend_frame_alpha,
+            borderpad=0.40,
+            labelspacing=0.52,
+            handletextpad=0.55,
+            fontsize=10.5,
+            title="Right axis",
+            title_fontsize=10.5,
+        )
+        local_legend.get_frame().set_facecolor("white")
+        local_legend.get_frame().set_alpha(lower_legend_fill_alpha)
+        local_legend.get_frame().set_edgecolor((0.70, 0.70, 0.70, legend_edge_alpha))
+
+    draw_metrics_panel(
+        ax_rate=ax_attack_metrics,
+        panel_label="Attack case",
+        baseline_false_positive_rate=attack_false_positive_rate,
+        defended_false_positive_rate=plot_false_over_total_pct,
+        baseline_false_negative_rate=attack_false_negative_rate,
+        defended_false_negative_rate=plot_false_negative_rate_pct,
+        baseline_local_effect=attack_local_effect_baseline,
+        defended_local_effect=plot_attack_local_effect,
+        false_positive_baseline_label=r"Attacked false $\mathbf{positive}$ rate ($\lambda = 0$)",
+        false_positive_curve_label=r"Cov-adapt false $\mathbf{positive}$ rate",
+        false_negative_baseline_label=r"Attacked false $\mathbf{negative}$ rate ($\lambda = 0$)",
+        false_negative_curve_label=r"Cov-adapt false $\mathbf{negative}$ rate",
+        local_baseline_label=r"Attacked local effect ($\lambda = 0$)",
+        local_curve_label="Cov-adapt local effect",
+        rate_baseline_color="#6F98B8",
+        rate_curve_positive_color="#7FB8C9",
+        rate_curve_negative_color="#5F88BA",
+        local_baseline_color="#A67A96",
+        local_curve_color="#6E5AA6",
+        right_side_labels=("false_negative",),
+        rate_lower_override=-5.0,
+        local_baseline_xmax=1.4,
     )
-    ax_calls.xaxis.set_major_locator(mticker.FixedLocator(positive_lambda_scales))
-    ax_calls.xaxis.set_major_formatter(mticker.FixedFormatter([f"{scale:g}" for scale in positive_lambda_scales]))
-    ax_calls.xaxis.set_minor_locator(mticker.NullLocator())
-    ax_calls.minorticks_off()
-    ax_calls.set_xlabel(r"$c$ in $\lambda = c\,\lambda_{\max}$")
-    ax_calls.set_ylabel("False positive / negative rate (%)")
-    max_rate = max(
-        float(np.max(plot_clean_false_over_total_pct)) if plot_clean_false_over_total_pct.size > 0 else 0.0,
-        float(np.max(plot_clean_false_negative_rate_pct)) if plot_clean_false_negative_rate_pct.size > 0 else 0.0,
-        float(np.max(plot_false_over_total_pct)) if plot_false_over_total_pct.size > 0 else 0.0,
-        float(np.max(plot_false_negative_rate_pct)) if plot_false_negative_rate_pct.size > 0 else 0.0,
-        clean_false_positive_rate,
-        attack_false_positive_rate,
-        clean_false_negative_rate,
-        attack_false_negative_rate,
-        5.0,
+    draw_metrics_panel(
+        ax_rate=ax_clean_metrics,
+        panel_label="Clean case",
+        baseline_false_positive_rate=clean_false_positive_rate,
+        defended_false_positive_rate=plot_clean_false_over_total_pct,
+        baseline_false_negative_rate=clean_false_negative_rate,
+        defended_false_negative_rate=plot_clean_false_negative_rate_pct,
+        baseline_local_effect=clean_local_effect_baseline,
+        defended_local_effect=plot_clean_local_effect,
+        false_positive_baseline_label=r"Non-attacked false $\mathbf{positive}$ rate",
+        false_positive_curve_label=r"Non-attacked + cov-adapt false $\mathbf{positive}$ rate",
+        false_negative_baseline_label=r"Non-attacked false $\mathbf{negative}$ rate",
+        false_negative_curve_label=r"Non-attacked + cov-adapt false $\mathbf{negative}$ rate",
+        local_baseline_label="Non-attacked local effect",
+        local_curve_label="Non-attacked + cov-adapt local effect",
+        rate_baseline_color="#6E9AA8",
+        rate_curve_positive_color="#7FB8C9",
+        rate_curve_negative_color="#5F88BA",
+        local_baseline_color="#B08BA4",
+        local_curve_color="#8A68A8",
+        right_side_labels=("false_negative", "local_effect"),
     )
-    ax_calls.set_ylim(0.0, min(100.0, max_rate + 10.0))
-    ax_calls.text(
-        0.03,
-        0.97,
-        rf"$\epsilon={right_epsilon:.2f}$",
-        transform=ax_calls.transAxes,
-        ha="left",
-        va="top",
-        fontsize=10,
-        bbox=dict(facecolor="white", edgecolor="#D0D0D0", alpha=0.92, boxstyle="round,pad=0.25"),
-    )
-    ax_calls.legend(loc="upper left", frameon=True, framealpha=0.95)
 
     out_dir = os.path.dirname(outpath)
     if out_dir:
@@ -1309,42 +1864,45 @@ def main() -> None:
     """
     Generate the nonlinear `g` call-summary comparison for epsilon 95%.
 
-    The default setup follows the 3D `AttackSense3D` example, fixes the
-    ellipsoid coverage at 95%, and varies the covariance-adaptation lambda.
+    Change the default values below directly when you want a lighter validation
+    run or a fuller experiment. Keeping them here makes the script easy to
+    tweak without relying on environment variables.
     """
-    T = int(os.environ.get("COVADAPT_G_T", str(DEFAULT_T)))
-    attack_t = int(os.environ.get("COVADAPT_G_ATTACK_T", str(DEFAULT_ATTACK_T)))
-    seed = int(os.environ.get("COVADAPT_G_SEED", str(DEFAULT_SEED)))
-    coverage = float(os.environ.get("COVADAPT_G_COVERAGE", "0.95"))
-    raw_lambda_scales = os.environ.get("COVADAPT_G_LAMBDA_SCALES", "0.2,0.5,1.0,2.0,5.0,10.0")
-    omega_h = float(os.environ.get("COVADAPT_G_OMEGA_H", "0.50"))
-    omega_o = float(os.environ.get("COVADAPT_G_OMEGA_O", "0.50"))
-    delta_threshold = float(os.environ.get("COVADAPT_G_DELTA", "0.20"))
-    N_runs = int(os.environ.get("COVADAPT_G_MC_RUNS", "500"))
-    mc_seed = int(os.environ.get("COVADAPT_G_MC_BASE_SEED", "2025"))
-    eta = float(os.environ.get("COVADAPT_G_ETA", str(DEFAULT_ETA)))
-    n_steps = int(os.environ.get("COVADAPT_G_N_STEPS", str(DEFAULT_N_STEPS)))
-    n_mc_opt = int(os.environ.get("COVADAPT_G_N_MC_OPT", str(DEFAULT_N_MC_OPT)))
-    n_mc_est = int(os.environ.get("COVADAPT_G_N_MC_EST", str(DEFAULT_N_MC_EST)))
-    force_mc = os.environ.get("COVADAPT_G_FORCE_MC", "0") == "1"
+    T = 5
+    attack_t = T
+    seed = 2025
+    coverage = 0.95
+    raw_lambda_scales = "0.1, 0.2,0.5,1.0,2.0,5.0,10.0"
+    omega_h = 0.50
+    omega_o = 0.50
+    N_runs = 2000
+    mc_seed = 2025
+    eta = 1.5
+    n_steps = 700
+    n_mc_opt = 96
+    n_mc_est = 1200
+    force_mc = False
+    # Change this default directly here when you move to a larger Linux server.
+    n_jobs = max(1, (os.cpu_count() or 1) - 1)
 
     lambda_scales = parse_lambda_scales(raw_lambda_scales)
     base_epsilon = coverage_to_epsilon(coverage)
-    epsilon_left = float(os.environ.get("COVADAPT_G_EPS_LEFT", str(0.5 * base_epsilon)))
-    epsilon_right = float(os.environ.get("COVADAPT_G_EPS_RIGHT", str(1.5 * base_epsilon)))
+    epsilon_left = 0.5 * base_epsilon
+    epsilon_right = 1.5 * base_epsilon
 
     if not (0 <= attack_t <= T):
         raise ValueError("attack_t must satisfy 0 <= attack_t <= T")
     if not np.isclose(omega_h + omega_o, 1.0, atol=1e-9):
         raise ValueError("omega_h and omega_o must sum to 1.")
-    if not (0.0 <= delta_threshold <= 1.0):
-        raise ValueError("delta_threshold must lie in [0, 1].")
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     lambda_tag = "-".join(f"{value:g}" for value in lambda_scales).replace(".", "p")
     outpath = os.path.join(
         out_dir,
-        f"comparison_g_callsummary_cov{int(round(100 * coverage))}_t{attack_t}_T{T}_seed{seed}_N{N_runs}_{lambda_tag}.png",
+        (
+            "comparison_g_threshold_upward_parallel_"
+            f"cov{int(round(100 * coverage))}_t{attack_t}_T{T}_seed{seed}_N{N_runs}_{lambda_tag}.png"
+        ),
     )
     left_tag = str(epsilon_left).replace(".", "p")
     right_tag = str(epsilon_right).replace(".", "p")
@@ -1361,12 +1919,12 @@ def main() -> None:
             lambda_scales=lambda_scales,
             omega_h=omega_h,
             omega_o=omega_o,
-            delta_threshold=delta_threshold,
             eta=eta,
             n_steps=n_steps,
             n_mc_opt=n_mc_opt,
             n_mc_est=n_mc_est,
             base_seed=mc_seed,
+            n_jobs=n_jobs,
         )
     def compute_right_mc_data() -> dict[str, np.ndarray | float | int]:
         return run_monte_carlo_g_lambda_sweep(
@@ -1378,22 +1936,42 @@ def main() -> None:
             lambda_scales=lambda_scales,
             omega_h=omega_h,
             omega_o=omega_o,
-            delta_threshold=delta_threshold,
             eta=eta,
             n_steps=n_steps,
             n_mc_opt=n_mc_opt,
             n_mc_est=n_mc_est,
             base_seed=mc_seed,
+            n_jobs=n_jobs,
         )
 
     left_mc_data = cached_npz(left_mc_data_path, compute_left_mc_data, force=force_mc)
     right_mc_data = cached_npz(right_mc_data_path, compute_right_mc_data, force=force_mc)
-    required_mc_keys = {"clean_adapt_prob"}
+    cached_threshold_left = float(left_mc_data.get("posterior_attack_threshold", np.nan))
+    cached_threshold_right = float(right_mc_data.get("posterior_attack_threshold", np.nan))
+    if not np.isclose(cached_threshold_left, DEFAULT_POSTERIOR_ATTACK_THRESHOLD, atol=1e-12):
+        print("[cache] left Monte Carlo cache uses a different posterior threshold; recomputing.")
+        left_mc_data = cached_npz(left_mc_data_path, compute_left_mc_data, force=True)
+    if not np.isclose(cached_threshold_right, DEFAULT_POSTERIOR_ATTACK_THRESHOLD, atol=1e-12):
+        print("[cache] right Monte Carlo cache uses a different posterior threshold; recomputing.")
+        right_mc_data = cached_npz(right_mc_data_path, compute_right_mc_data, force=True)
+    required_mc_keys = {
+        "clean_adapt_prob",
+        "clean_local_error",
+        "attack_local_error",
+        "clean_adapt_local_error",
+        "adapt_local_error",
+    }
     if not required_mc_keys.issubset(left_mc_data):
         print("[cache] left Monte Carlo cache is missing clean cov-adapt data; recomputing.")
         left_mc_data = cached_npz(left_mc_data_path, compute_left_mc_data, force=True)
     if not required_mc_keys.issubset(right_mc_data):
         print("[cache] right Monte Carlo cache is missing clean cov-adapt data; recomputing.")
+        right_mc_data = cached_npz(right_mc_data_path, compute_right_mc_data, force=True)
+    if not mc_probability_cache_is_usable(left_mc_data, n_lambda=lambda_scales.size):
+        print("[cache] left Monte Carlo cache has invalid probability data; recomputing.")
+        left_mc_data = cached_npz(left_mc_data_path, compute_left_mc_data, force=True)
+    if not mc_probability_cache_is_usable(right_mc_data, n_lambda=lambda_scales.size):
+        print("[cache] right Monte Carlo cache has invalid probability data; recomputing.")
         right_mc_data = cached_npz(right_mc_data_path, compute_right_mc_data, force=True)
 
     plot_g_call_summary_vs_lambda(
@@ -1407,6 +1985,10 @@ def main() -> None:
         right_attack_prob=np.asarray(right_mc_data["attack_prob"], dtype=float),
         right_clean_adapt_prob=np.asarray(right_mc_data["clean_adapt_prob"], dtype=float),
         right_adapt_prob=np.asarray(right_mc_data["adapt_prob"], dtype=float),
+        right_clean_local_error=np.asarray(right_mc_data["clean_local_error"], dtype=float),
+        right_attack_local_error=np.asarray(right_mc_data["attack_local_error"], dtype=float),
+        right_clean_adapt_local_error=np.asarray(right_mc_data["clean_adapt_local_error"], dtype=float),
+        right_adapt_local_error=np.asarray(right_mc_data["adapt_local_error"], dtype=float),
         right_epsilon=float(right_mc_data["epsilon"]),
         lambda_scales=np.asarray(left_mc_data["lambda_scales"], dtype=float),
         call_threshold=DEFAULT_CALL_THRESHOLD,

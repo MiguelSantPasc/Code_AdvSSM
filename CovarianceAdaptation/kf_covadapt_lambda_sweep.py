@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-comparison_lambdas.py
+kf_covadapt_lambda_sweep.py
 
 Lambda-sweep comparison for the online covariance-adaptation defense.
 
-This script is the multi-lambda companion to
-`CovarianceAdaptation/comparison.py`. It keeps the same KF-only adversarial
-setup, but replaces the single defended trajectory by a sweep over several
-multipliers of `lambda_max`, where `lambda_max` is the largest eigenvalue of
-the attacked-time observation covariance `V_t` that is being modified.
+This script studies the same KF-only adversarial setup used across the
+covariance-adaptation folder, but replaces a single defended trajectory by a
+sweep over several multipliers of `lambda_max`, where `lambda_max` is the
+largest eigenvalue of the attacked-time observation covariance `V_t` that is
+being modified.
 
-The output figure contains four compact panels:
-1. First hidden-state dimension `s_t^(1)` over time for:
+The output figure contains three compact panels:
+1. Second hidden-state dimension `s_t^(2)` over time for:
    - the true state,
-   - the clean non-attacked KF baseline,
-   - the attacked KF,
-   - defended KF trajectories for several `lambda` values.
-2. Second hidden-state dimension `s_t^(2)` with the same trajectory
-   comparison.
-3. Monte Carlo mean local effect versus `lambda = c lambda_max`, with
+   - the clean non-attacked baseline,
+   - the attacked baseline,
+   - defended trajectories for several `lambda` values,
+   - the prior state estimate at the attacked time before observing either
+     the non-attacked or attacked measurement.
+2. Monte Carlo mean local effect versus `lambda = c lambda_max`, with
    horizontal clean/attack references and a shaded spread band.
-4. The same mean-curve comparison for the global effect.
+3. The same mean-curve comparison for the global effect.
 
 To make the trajectory lines easy to inspect, this figure intentionally omits
 all uncertainty bands and confidence intervals.
@@ -52,7 +52,7 @@ try:
     from AdvSSM.KKTOpt import kalman_filter_nd, simulate_lgssm_nd
     from AdvSSM.KKTOpt_tdependent import sample_random_ssm_run_params
     from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from CovarianceAdaptation.comparison import (
+    from CovarianceAdaptation.covariance_adaptation_utils import (
         build_kf_attack,
         build_reference_setup,
         kalman_filter_with_online_covariance_adaptation,
@@ -63,7 +63,7 @@ except ModuleNotFoundError:
     from KKTOpt import kalman_filter_nd, simulate_lgssm_nd
     from KKTOpt_tdependent import sample_random_ssm_run_params
     from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from comparison import (
+    from covariance_adaptation_utils import (
         build_kf_attack,
         build_reference_setup,
         kalman_filter_with_online_covariance_adaptation,
@@ -245,7 +245,7 @@ def evaluate_reference_lambda_sweep(
     lambda_max = lambda_max_from_observation_covariance(mats["R_t"][attack_t])
     lambda_values = lambda_scales * lambda_max
 
-    clean_m, _, _, _ = kalman_filter_nd(
+    clean_m, _, clean_m_pred, _ = kalman_filter_nd(
         y=y_clean,
         u=u_controls,
         A_t=mats["A_t"],
@@ -311,6 +311,7 @@ def evaluate_reference_lambda_sweep(
         "delta_threshold": delta_threshold,
         "x_true": x_true,
         "clean_m": clean_m,
+        "prior_m_at_attack": np.asarray(clean_m_pred[attack_t], dtype=float),
         "attack_m": attack_m,
         "adapt_means": adapt_means,
         "pi_values": pi_values,
@@ -503,7 +504,8 @@ def run_monte_carlo_lambda_sweep(
 
     for run_idx in range(N_runs):
         run_seed = base_seed + 1000 * run_idx
-        print(f"[MC-lambda] run {run_idx + 1}/{N_runs} (seed={run_seed})")
+        if (run_idx + 1) % 10 == 0 or run_idx == N_runs - 1:
+            print(f"[MC-lambda] run {run_idx + 1}/{N_runs} (seed={run_seed})")
         try:
             effects = evaluate_single_monte_carlo_run_lambda_sweep(
                 run_seed=run_seed,
@@ -641,7 +643,7 @@ def draw_effect_curve_panel(
         color="#5C97BF",
         linewidth=1.9,
         linestyle="--",
-        label="Clean KF (sin cov-adapt)",
+        label="Non-Attacked",
         zorder=4,
     )
     ax.axhline(
@@ -649,7 +651,7 @@ def draw_effect_curve_panel(
         color="#F0A79D",
         linewidth=1.8,
         linestyle="--",
-        label="Attacked KF",
+        label="Attacked",
         zorder=4,
     )
 
@@ -695,6 +697,7 @@ def draw_state_dimension_panel(
     dim_idx: int,
     x_true: np.ndarray,
     clean_m: np.ndarray,
+    prior_m_at_attack: np.ndarray,
     attack_m: np.ndarray,
     adapt_means: np.ndarray,
     lambda_scales: np.ndarray,
@@ -702,6 +705,7 @@ def draw_state_dimension_panel(
     attack_t: int,
     show_lambda_note: bool,
     lambda_max_reference: float,
+    legend_loc: str = "upper left",
 ) -> None:
     """
     Draw one hidden-state trajectory panel without uncertainty bands.
@@ -734,7 +738,7 @@ def draw_state_dimension_panel(
         clean_m[:, dim_idx],
         color=clean_color,
         linewidth=1.9,
-        label="Clean KF",
+        label="Non-Attacked",
         zorder=3,
     )
     ax.plot(
@@ -743,8 +747,19 @@ def draw_state_dimension_panel(
         color=attack_color,
         linewidth=1.9,
         linestyle="--",
-        label="Attacked KF",
+        label="Attacked",
         zorder=4,
+    )
+    ax.scatter(
+        [attack_t],
+        [float(prior_m_at_attack[dim_idx])],
+        color="black",
+        s=42,
+        marker="D",
+        edgecolors="white",
+        linewidths=0.8,
+        label="Without observation",
+        zorder=6,
     )
 
     for lam_idx, _ in enumerate(lambda_scales):
@@ -759,6 +774,7 @@ def draw_state_dimension_panel(
 
     state_curves = [x_true[:, dim_idx], clean_m[:, dim_idx], attack_m[:, dim_idx]]
     state_curves.extend([adapt_means[lam_idx, :, dim_idx] for lam_idx in range(lambda_scales.size)])
+    state_curves.append(np.array([float(prior_m_at_attack[dim_idx])], dtype=float))
     state_min = float(np.min([np.min(curve) for curve in state_curves]))
     state_max = float(np.max([np.max(curve) for curve in state_curves]))
     state_pad = 0.06 * max(state_max - state_min, 1e-8)
@@ -767,7 +783,7 @@ def draw_state_dimension_panel(
     ax.set_xlim(-0.15, x_true.shape[0] - 0.85)
     ax.set_xlabel("time t")
     ax.set_ylabel(rf"$s_t^{{({dim_idx + 1})}}$")
-    ax.legend(loc="upper left", frameon=True, framealpha=0.95, borderpad=0.35)
+    ax.legend(loc=legend_loc, frameon=True, framealpha=0.95, borderpad=0.35)
 
     if show_lambda_note:
         ax.text(
@@ -822,6 +838,7 @@ def plot_lambda_sweep_figure(
     *,
     x_true: np.ndarray,
     clean_m: np.ndarray,
+    prior_m_at_attack: np.ndarray,
     attack_m: np.ndarray,
     adapt_means: np.ndarray,
     lambda_scales: np.ndarray,
@@ -838,41 +855,28 @@ def plot_lambda_sweep_figure(
     outpath: str,
 ) -> None:
     """
-    Plot the requested lambda-sweep figure without uncertainty intervals.
+    Plot the requested three-panel lambda-sweep figure.
 
-    The first two panels show the two hidden-state dimensions, while the last
-    two panels show defended-effect mean curves with dashed clean/attack
+    The left panel shows only the second hidden-state dimension, while the
+    two right panels show defended-effect mean curves with dashed clean/attack
     references and shaded Monte Carlo spread.
     """
     set_plot_theme()
 
     lambda_line_colors = lambda_colors(lambda_scales)
 
-    fig = plt.figure(figsize=(20.2, 4.35), constrained_layout=True)
-    grid = fig.add_gridspec(1, 4, width_ratios=[1.7, 1.7, 1.45, 1.45], wspace=0.07)
-    ax_state_1 = fig.add_subplot(grid[0, 0])
-    ax_state_2 = fig.add_subplot(grid[0, 1], sharex=ax_state_1)
-    ax_local = fig.add_subplot(grid[0, 2])
-    ax_global = fig.add_subplot(grid[0, 3])
+    fig = plt.figure(figsize=(15.8, 4.35), constrained_layout=True)
+    grid = fig.add_gridspec(1, 3, width_ratios=[1.8, 1.45, 1.45], wspace=0.08)
+    ax_state = fig.add_subplot(grid[0, 0])
+    ax_local = fig.add_subplot(grid[0, 1])
+    ax_global = fig.add_subplot(grid[0, 2])
 
     draw_state_dimension_panel(
-        ax=ax_state_1,
-        dim_idx=0,
-        x_true=x_true,
-        clean_m=clean_m,
-        attack_m=attack_m,
-        adapt_means=adapt_means,
-        lambda_scales=lambda_scales,
-        lambda_line_colors=lambda_line_colors,
-        attack_t=attack_t,
-        show_lambda_note=False,
-        lambda_max_reference=lambda_max_reference,
-    )
-    draw_state_dimension_panel(
-        ax=ax_state_2,
+        ax=ax_state,
         dim_idx=1,
         x_true=x_true,
         clean_m=clean_m,
+        prior_m_at_attack=prior_m_at_attack,
         attack_m=attack_m,
         adapt_means=adapt_means,
         lambda_scales=lambda_scales,
@@ -880,10 +884,11 @@ def plot_lambda_sweep_figure(
         attack_t=attack_t,
         show_lambda_note=True,
         lambda_max_reference=lambda_max_reference,
+        legend_loc="lower left",
     )
     add_lambda_colorbar(
         fig=fig,
-        axes=[ax_state_1, ax_state_2],
+        axes=[ax_state],
         lambda_scales=lambda_scales,
     )
 
@@ -917,24 +922,22 @@ def main() -> None:
     """
     Generate the lambda-sweep covariance-adaptation figure and caches.
 
-    The defaults are still lightweight enough for experimentation, and the
-    lambda scales can be overridden through `COVADAPT_LAMBDA_SCALES`.
+    Change the default values below directly when you want a lighter validation
+    run or a fuller experiment. Keeping them here makes the script easy to
+    tweak without relying on environment variables.
     """
-    T = int(os.environ.get("COVADAPT_T", "10"))
-    attack_t = int(os.environ.get("COVADAPT_ATTACK_T", "5"))
-    seed = int(os.environ.get("COVADAPT_SEED", "202"))
-    epsilon = float(os.environ.get("COVADAPT_EPS", "5.991"))
-    raw_lambda_scales = os.environ.get(
-        "COVADAPT_LAMBDA_SCALES",
-        "0.2,0.5,1.0,5.0,10.0,50.0,100.0",
-    )
-    omega_h = float(os.environ.get("COVADAPT_OMEGA_H", "0.50"))
-    omega_o = float(os.environ.get("COVADAPT_OMEGA_O", "0.50"))
-    delta_threshold = float(os.environ.get("COVADAPT_DELTA", "0.20"))
-    N_runs = int(os.environ.get("COVADAPT_MC_RUNS", "1000"))
-    mc_seed = int(os.environ.get("COVADAPT_MC_BASE_SEED", "20"))
-    force_reference = os.environ.get("COVADAPT_FORCE_REFERENCE", "0") == "1"
-    force_mc = os.environ.get("COVADAPT_FORCE_MC", "0") == "1"
+    T = 10
+    attack_t = 5
+    seed = 202
+    epsilon = 5.991
+    raw_lambda_scales = "0.2,0.5,1.0,5.0,10.0,50.0,100.0"
+    omega_h = 0.50
+    omega_o = 0.50
+    delta_threshold = 0.20
+    N_runs = 1000
+    mc_seed = 20
+    force_reference = False
+    force_mc = False
 
     lambda_scales = parse_lambda_scales(raw_lambda_scales)
 
@@ -980,6 +983,20 @@ def main() -> None:
         )
 
     reference_data = cached_npz(reference_data_path, compute_reference_data, force=force_reference)
+    required_reference_keys = {
+        "x_true",
+        "clean_m",
+        "prior_m_at_attack",
+        "attack_m",
+        "adapt_means",
+        "pi_values",
+        "gamma_values",
+        "bar_gamma_values",
+    }
+    if not required_reference_keys.issubset(reference_data):
+        print("[cache] existing reference cache is missing the no-observation state point; recomputing.")
+        reference_data = cached_npz(reference_data_path, compute_reference_data, force=True)
+
     mc_data = cached_npz(mc_data_path, compute_mc_data, force=force_mc)
     required_mc_keys = {"clean_local_by_lambda", "clean_global_by_lambda"}
     if not required_mc_keys.issubset(mc_data):
@@ -989,6 +1006,7 @@ def main() -> None:
     plot_lambda_sweep_figure(
         x_true=np.asarray(reference_data["x_true"], dtype=float),
         clean_m=np.asarray(reference_data["clean_m"], dtype=float),
+        prior_m_at_attack=np.asarray(reference_data["prior_m_at_attack"], dtype=float),
         attack_m=np.asarray(reference_data["attack_m"], dtype=float),
         adapt_means=np.asarray(reference_data["adapt_means"], dtype=float),
         lambda_scales=np.asarray(reference_data["lambda_scales"], dtype=float),
