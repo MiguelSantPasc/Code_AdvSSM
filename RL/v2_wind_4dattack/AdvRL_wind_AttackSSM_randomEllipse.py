@@ -203,8 +203,11 @@ def sample_uniform_from_attack_region(
     rng: np.random.Generator,
 ) -> np.ndarray:
     """
-    Sample approximately uniformly from:
+    Sample uniformly from the boundary of:
         { y : (y-center)^T Sigma^{-1} (y-center) <= epsilon }
+
+    The direction is sampled uniformly on the unit sphere and then mapped to
+    the ellipsoid boundary with Mahalanobis radius exactly `sqrt(epsilon)`.
     """
     center = np.asarray(center, dtype=np.float64).reshape(-1)
     Sigma = project_to_psd(Sigma).astype(np.float64)
@@ -222,9 +225,9 @@ def sample_uniform_from_attack_region(
 
     direction = direction / norm
 
-    # Uniform sample inside the unit ball, then map it into the ellipsoid.
-    radius = float(rng.random()) ** (1.0 / float(dim))
-    ball_sample = np.sqrt(float(epsilon)) * radius * direction
+    # Boundary-only epsilon perturbations use the full admissible Mahalanobis
+    # radius instead of sampling a smaller interior radius.
+    ball_sample = np.sqrt(float(epsilon)) * direction
     L = sqrtm_psd(Sigma).astype(np.float64)
     sample = center + L @ ball_sample
     return sample.astype(np.float32)
@@ -800,7 +803,7 @@ def rollout_episode_return_random_attack_kf(
       - the first observation is NEVER attacked
       - first step acts from the initial nominal/KF state so the episode starts at (0,0)
       - from the second step onward, each observation is attacked with probability attack_prob
-      - if an attack is triggered, sample a random 4D observation inside the same ellipsoid
+      - if an attack is triggered, sample a random 4D observation on the same ellipsoid boundary
       - if not attacked, the KF updates with the nominal noisy measurement
       - policy acts on the posterior mean m_post
     """
@@ -1197,7 +1200,7 @@ def main():
     print(f"[cfg] ATTACK_STD={ATTACK_STD} | ATTACK_EPS={ATTACK_EPS}")
     print(f"[cfg] KF_MEAS_STD={KF_MEAS_STD} | KF_PROC_STD={KF_PROC_STD}")
     print(f"[cfg] PGD_STEPS={PGD_STEPS} | PGD_STEP_SIZE={PGD_STEP_SIZE} | MC_SAMPLES={MC_SAMPLES}")
-    print("[cfg] RANDOM_BASELINE=same 4D ellipsoid, uniform sample when attack is triggered")
+    print("[cfg] RANDOM_BASELINE=same 4D ellipsoid boundary, uniform direction when attack is triggered")
     print(f"[out] FIGURES_DIR={FIGURES_DIR}")
 
     plot_accumulated_reward_clean_noisykf_attackkf_randomkf(

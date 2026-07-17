@@ -146,7 +146,7 @@ def build_panel_specifications(
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
         ("Attack + KF", "acc_attack_kf"),
-        (r"$\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
     ]
 
     attack_spec = [
@@ -167,12 +167,12 @@ def build_panel_specifications(
     random_spec = [
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
-        (r"$\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
     ]
     random_spec.extend(
         [
             (
-                rf"$\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
+                rf"Boundary $\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
                 f"acc_random_cov_{c_scale:g}",
             )
             for c_scale in c_scales

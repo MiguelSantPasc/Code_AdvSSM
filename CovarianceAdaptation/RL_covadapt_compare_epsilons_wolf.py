@@ -14,8 +14,8 @@ What this script does:
    `CovarianceAdaptation/RL_covadapt_compare_epsilons.py`:
    - baseline methods,
    - attacked-case methods,
-   - epsilon-perturbation methods.
-4. Extend the attack and epsilon-perturbation panels with two additional
+   - boundary epsilon-perturbation methods.
+4. Extend the attack and boundary epsilon-perturbation panels with two additional
    robust filters inspired by Duran-Martin et al.:
    - WoLF-IMQ,
    - WoLF-TMD.
@@ -389,7 +389,7 @@ def rollout_episode_return_random_attack_kf_wolf(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under random-ellipsoid attacks with a WoLF defense.
+    Roll out one episode under random-boundary ellipsoid attacks with a WoLF defense.
 
     This mirrors the covariance-adaptation random-attack rollout so the only
     difference is the filter update rule used after an attacked observation is
@@ -814,7 +814,7 @@ def build_panel_specifications(
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
         ("Attack + KF", "acc_attack_kf"),
-        (r"$\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
     ]
 
     attack_spec = [
@@ -841,12 +841,12 @@ def build_panel_specifications(
     random_spec = [
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
-        (r"$\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
     ]
     random_spec.extend(
         [
             (
-                rf"$\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
+                rf"Boundary $\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
                 f"acc_random_cov_{c_scale:g}",
             )
             for c_scale in c_scales
@@ -854,8 +854,8 @@ def build_panel_specifications(
     )
     random_spec.extend(
         [
-            (r"$\epsilon$-perturbation + WoLF-IMQ", "acc_random_wolf_imq"),
-            (r"$\epsilon$-perturbation + WoLF-TMD", "acc_random_wolf_tmd"),
+            (r"Boundary $\epsilon$-perturbation + WoLF-IMQ", "acc_random_wolf_imq"),
+            (r"Boundary $\epsilon$-perturbation + WoLF-TMD", "acc_random_wolf_tmd"),
         ]
     )
     return baseline_spec, attack_spec, random_spec

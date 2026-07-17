@@ -513,7 +513,7 @@ def rollout_episode_return_random_attack_kf_covadapt(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under random-ellipse attacks with covariance adaptation.
+    Roll out one episode under random-boundary ellipsoid attacks with covariance adaptation.
 
     The defended filter operates on the full 4D policy observation so the
     random attacked wind coordinates are defended together with the attacked
@@ -899,7 +899,7 @@ def plot_accumulated_reward_comparison(
         "Noise-Free",
         "Noise + KF",
         "Attacked + KF",
-        r"$\epsilon$-perturbation + KF",
+        r"Boundary $\epsilon$-perturbation + KF",
     ]
     baseline_values = [
         normalized_final_reward(acc_clean),
@@ -944,11 +944,11 @@ def plot_accumulated_reward_comparison(
     random_labels = [
         "Noise-Free",
         "Noise + KF",
-        r"$\epsilon$-perturbation + KF",
+        r"Boundary $\epsilon$-perturbation + KF",
     ]
     random_labels.extend(
         [
-            rf"$\epsilon$-perturbation + cov-adapt"
+            rf"Boundary $\epsilon$-perturbation + cov-adapt"
             + "\n"
             + rf"($\lambda={c_scale:g}\lambda_{{\max}}$)"
             for c_scale in c_scales
