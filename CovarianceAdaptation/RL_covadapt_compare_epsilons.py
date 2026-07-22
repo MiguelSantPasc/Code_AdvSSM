@@ -470,14 +470,13 @@ def main() -> None:
     """
     model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
     device = "cpu"
-    noise_std = 0.5
+    noise_std = 0.6
     attack_prob = 0.15
-    attack_std = noise_std
     attack_eps_values = (0.75, 0.95)
     kf_meas_std = noise_std
     kf_proc_std = 0.03
-    pgd_steps = 65
-    pgd_step_size = 0.25
+    pgd_steps = 120
+    pgd_step_size = 0.35
     mc_samples = 256
     n_episodes = 100
     seed0 = 1_000
@@ -488,7 +487,7 @@ def main() -> None:
     delta_threshold = 0.20
     # Keep cache reuse enabled so repeated runs load the saved epsilon-specific
     # experiment outputs instead of recomputing them.
-    force_cache = False
+    force_cache = True
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found at:\n  {model_path}")
@@ -536,7 +535,6 @@ def main() -> None:
                 seed0=seed0,
                 model_path=model_path,
                 noise_std=noise_std,
-                attack_std=attack_std,
                 attack_eps=attack_eps_value,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,

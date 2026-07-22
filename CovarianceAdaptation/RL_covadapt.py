@@ -346,11 +346,266 @@ def covariance_adapted_kf_update_policy_observation(
     return m_post.astype(np.float32), P_post.astype(np.float32), diagnostics
 
 
+def rollout_episode_return_attack_kf_policyobs(
+    env,
+    model,
+    *,
+    attack_eps: float,
+    attack_prob: float,
+    kf_meas_std: float,
+    kf_proc_std: float,
+    pgd_steps: int,
+    pgd_step_size: float,
+    mc_samples: int,
+    seed_for_attack: int,
+    device: str = "cpu",
+) -> float:
+    """
+    Roll out one episode under PGD attacks with a nominal 4D policy-observation KF.
+
+    Unlike the older fixed-diagonal attack geometry, the attack ellipsoid is
+    now centered at the predictive mean `m_pred` and shaped by the predictive
+    observation covariance `S_t = P_pred + R`, matching the AdvSSM geometry.
+    """
+    dev = torch.device(device)
+    obs = env.reset()
+
+    goal = env.goal.copy()
+    goal_r_max = float(env.cfg.goal_r_max)
+    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
+    R_policy, Q_policy, R_position = build_policy_obs_filter_covariances(
+        goal_r_max=goal_r_max,
+        kf_meas_std=kf_meas_std,
+        kf_proc_std=kf_proc_std,
+        wind_process_std=wind_process_std,
+    )
+
+    rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
+    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
+
+    obs_state = np.asarray(obs, dtype=np.float32)
+    m_post, P_post, _ = kf_update_policy_observation(
+        m_pred=obs_state.copy(),
+        P_pred=R_policy.copy(),
+        y_obs=obs_state,
+        R=R_policy,
+    )
+
+    ep_return = 0.0
+    step_idx = 0
+    obs_filt = m_post.copy()
+
+    with torch.no_grad():
+        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+    m_pred, P_pred = predict_policy_observation(
+        m_post=m_post,
+        P_post=P_post,
+        action=action,
+        goal_r_max=goal_r_max,
+        Q=Q_policy,
+    )
+
+    obs, reward, done, _info = env.step(action)
+    ep_return += float(reward)
+    if done:
+        return float(ep_return)
+
+    step_idx = 1
+
+    for _ in range(1, env.cfg.max_steps):
+        obs_clean = np.asarray(obs, dtype=np.float32)
+        do_attack = bool(rng_attack_gate.random() < float(attack_prob))
+        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
+        obs_noisy = obs_clean.copy()
+        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
+
+        if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
+            m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
+                m_policy=m_pred,
+                P_policy=P_pred,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            obs_star, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value(
+                model=model,
+                obs_nom=obs_clean,
+                m_pred=m_pred_pos,
+                P_pred=P_pred_pos,
+                R=R_position,
+                goal=goal,
+                goal_r_max=goal_r_max,
+                attack_sigma=attack_sigma,
+                attack_center=attack_center,
+                attack_eps=attack_eps,
+                pgd_steps=pgd_steps,
+                pgd_step_size=pgd_step_size,
+                mc_samples=mc_samples,
+                rng_seed=int(seed_for_attack + 10_000 * step_idx),
+                device=device,
+            )
+            obs_attack = np.asarray(obs_star, dtype=np.float32)
+            m_post, P_post, _ = kf_update_policy_observation(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=obs_attack,
+                R=R_policy,
+            )
+        else:
+            m_post, P_post, _ = kf_update_policy_observation(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=obs_noisy,
+                R=R_policy,
+            )
+
+        obs_filt = m_post.copy()
+
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+        m_pred, P_pred = predict_policy_observation(
+            m_post=m_post,
+            P_post=P_post,
+            action=action,
+            goal_r_max=goal_r_max,
+            Q=Q_policy,
+        )
+
+        obs, reward, done, _info = env.step(action)
+        ep_return += float(reward)
+        step_idx += 1
+
+        if done:
+            break
+
+    return float(ep_return)
+
+
+def rollout_episode_return_random_attack_kf_policyobs(
+    env,
+    model,
+    *,
+    attack_eps: float,
+    attack_prob: float,
+    kf_meas_std: float,
+    kf_proc_std: float,
+    seed_for_attack: int,
+    device: str = "cpu",
+) -> float:
+    """
+    Roll out one episode under random-boundary attacks with a nominal 4D KF.
+
+    The random ellipsoid uses the predictive observation geometry
+    `N(m_pred, P_pred + R)` at each attacked step.
+    """
+    dev = torch.device(device)
+    obs = env.reset()
+
+    goal = env.goal.copy()
+    goal_r_max = float(env.cfg.goal_r_max)
+    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
+    R_policy, Q_policy, _R_position = build_policy_obs_filter_covariances(
+        goal_r_max=goal_r_max,
+        kf_meas_std=kf_meas_std,
+        kf_proc_std=kf_proc_std,
+        wind_process_std=wind_process_std,
+    )
+
+    rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
+    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
+    rng_attack_sample = np.random.default_rng(int(seed_for_attack) + 999999)
+
+    obs_state = np.asarray(obs, dtype=np.float32)
+    m_post, P_post, _ = kf_update_policy_observation(
+        m_pred=obs_state.copy(),
+        P_pred=R_policy.copy(),
+        y_obs=obs_state,
+        R=R_policy,
+    )
+
+    ep_return = 0.0
+    obs_filt = m_post.copy()
+
+    with torch.no_grad():
+        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+    m_pred, P_pred = predict_policy_observation(
+        m_post=m_post,
+        P_post=P_post,
+        action=action,
+        goal_r_max=goal_r_max,
+        Q=Q_policy,
+    )
+
+    obs, reward, done, _info = env.step(action)
+    ep_return += float(reward)
+    if done:
+        return float(ep_return)
+
+    for _ in range(1, env.cfg.max_steps):
+        obs_clean = np.asarray(obs, dtype=np.float32)
+        do_attack = bool(rng_attack_gate.random() < float(attack_prob))
+        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
+        obs_noisy = obs_clean.copy()
+        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
+
+        if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
+            obs_random = attack_mod.sample_uniform_from_attack_region(
+                center=attack_center,
+                Sigma=attack_sigma,
+                epsilon=attack_eps,
+                rng=rng_attack_sample,
+            )
+            obs_attack = np.asarray(obs_random, dtype=np.float32)
+            m_post, P_post, _ = kf_update_policy_observation(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=obs_attack,
+                R=R_policy,
+            )
+        else:
+            m_post, P_post, _ = kf_update_policy_observation(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=obs_noisy,
+                R=R_policy,
+            )
+
+        obs_filt = m_post.copy()
+
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+        m_pred, P_pred = predict_policy_observation(
+            m_post=m_post,
+            P_post=P_post,
+            action=action,
+            goal_r_max=goal_r_max,
+            Q=Q_policy,
+        )
+
+        obs, reward, done, _info = env.step(action)
+        ep_return += float(reward)
+
+        if done:
+            break
+
+    return float(ep_return)
+
+
 def rollout_episode_return_attack_kf_covadapt(
     env,
     model,
     *,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -385,7 +640,6 @@ def rollout_episode_return_attack_kf_covadapt(
         kf_proc_std=kf_proc_std,
         wind_process_std=wind_process_std,
     )
-    Sigma_attack = (float(attack_std) ** 2) * np.eye(4, dtype=np.float32)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
     rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
@@ -430,6 +684,8 @@ def rollout_episode_return_attack_kf_covadapt(
         obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
 
         if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
             m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
                 m_policy=m_pred,
                 P_policy=P_pred,
@@ -444,7 +700,8 @@ def rollout_episode_return_attack_kf_covadapt(
                 R=R_position,
                 goal=goal,
                 goal_r_max=goal_r_max,
-                attack_sigma=Sigma_attack,
+                attack_sigma=attack_sigma,
+                attack_center=attack_center,
                 attack_eps=attack_eps,
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
@@ -500,7 +757,6 @@ def rollout_episode_return_random_attack_kf_covadapt(
     env,
     model,
     *,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -531,7 +787,6 @@ def rollout_episode_return_random_attack_kf_covadapt(
         kf_proc_std=kf_proc_std,
         wind_process_std=wind_process_std,
     )
-    Sigma_attack = (float(attack_std) ** 2) * np.eye(4, dtype=np.float32)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
     rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
@@ -574,9 +829,11 @@ def rollout_episode_return_random_attack_kf_covadapt(
         obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
 
         if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
             obs_random = attack_mod.sample_uniform_from_attack_region(
-                center=obs_clean,
-                Sigma=Sigma_attack,
+                center=attack_center,
+                Sigma=attack_sigma,
                 epsilon=attack_eps,
                 rng=rng_attack_sample,
             )
@@ -656,7 +913,6 @@ def compute_accumulated_reward_data(
     seed0: int,
     model_path: str,
     noise_std: float,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -729,10 +985,9 @@ def compute_accumulated_reward_data(
             kf_proc_std=kf_proc_std,
             device=device,
         )
-        ret_attack = attack_mod.rollout_episode_return_attack_kf(
+        ret_attack = rollout_episode_return_attack_kf_policyobs(
             env_attack,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -743,10 +998,9 @@ def compute_accumulated_reward_data(
             seed_for_attack=seed,
             device=device,
         )
-        ret_random = attack_mod.rollout_episode_return_random_attack_kf(
+        ret_random = rollout_episode_return_random_attack_kf_policyobs(
             env_random,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -779,7 +1033,6 @@ def compute_accumulated_reward_data(
             ret_attack_cov = rollout_episode_return_attack_kf_covadapt(
                 env_attack_cov,
                 model,
-                attack_std=attack_std,
                 attack_eps=attack_eps,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,
@@ -797,7 +1050,6 @@ def compute_accumulated_reward_data(
             ret_random_cov = rollout_episode_return_random_attack_kf_covadapt(
                 env_random_cov,
                 model,
-                attack_std=attack_std,
                 attack_eps=attack_eps,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,
@@ -829,7 +1081,6 @@ def compute_accumulated_reward_data(
         "n_episodes": int(n_episodes),
         "seed0": int(seed0),
         "noise_std": float(noise_std),
-        "attack_std": float(attack_std),
         "attack_eps": float(attack_eps),
         "attack_prob": float(attack_prob),
         "kf_meas_std": float(kf_meas_std),
@@ -1120,14 +1371,13 @@ def main() -> None:
     """
     model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
     device = "cpu"
-    noise_std = 0.5
+    noise_std = 0.6
     attack_prob = 0.15
-    attack_std = noise_std
     attack_eps = 0.75
     kf_meas_std = noise_std
     kf_proc_std = 0.03
-    pgd_steps = 65
-    pgd_step_size = 0.25
+    pgd_steps = 120
+    pgd_step_size = 0.35
     mc_samples = 256
     n_episodes = 500
     seed0 = 1_000
@@ -1136,7 +1386,7 @@ def main() -> None:
     omega_h = 0.50
     omega_o = 0.50
     delta_threshold = 0.20
-    force_cache = False
+    force_cache = True
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found at:\n  {model_path}")
@@ -1158,7 +1408,6 @@ def main() -> None:
             seed0=seed0,
             model_path=model_path,
             noise_std=noise_std,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,

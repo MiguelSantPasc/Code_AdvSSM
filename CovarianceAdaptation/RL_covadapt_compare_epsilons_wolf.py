@@ -72,7 +72,9 @@ try:
         policy_obs_state_to_position_belief,
         predict_policy_observation,
         rl_mod,
+        rollout_episode_return_attack_kf_policyobs,
         rollout_episode_return_attack_kf_covadapt,
+        rollout_episode_return_random_attack_kf_policyobs,
         rollout_episode_return_random_attack_kf_covadapt,
         set_plot_theme,
         style_axis,
@@ -90,7 +92,9 @@ except ModuleNotFoundError:
         policy_obs_state_to_position_belief,
         predict_policy_observation,
         rl_mod,
+        rollout_episode_return_attack_kf_policyobs,
         rollout_episode_return_attack_kf_covadapt,
+        rollout_episode_return_random_attack_kf_policyobs,
         rollout_episode_return_random_attack_kf_covadapt,
         set_plot_theme,
         style_axis,
@@ -229,7 +233,6 @@ def rollout_episode_return_attack_kf_wolf(
     env,
     model,
     *,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -265,7 +268,6 @@ def rollout_episode_return_attack_kf_wolf(
         kf_proc_std=kf_proc_std,
         wind_process_std=wind_process_std,
     )
-    Sigma_attack = (float(attack_std) ** 2) * np.eye(4, dtype=np.float32)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
     rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
@@ -309,6 +311,8 @@ def rollout_episode_return_attack_kf_wolf(
         obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
 
         if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
             m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
                 m_policy=m_pred,
                 P_policy=P_pred,
@@ -323,7 +327,8 @@ def rollout_episode_return_attack_kf_wolf(
                 R=R_position,
                 goal=goal,
                 goal_r_max=goal_r_max,
-                attack_sigma=Sigma_attack,
+                attack_sigma=attack_sigma,
+                attack_center=attack_center,
                 attack_eps=attack_eps,
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
@@ -377,7 +382,6 @@ def rollout_episode_return_random_attack_kf_wolf(
     env,
     model,
     *,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -407,7 +411,6 @@ def rollout_episode_return_random_attack_kf_wolf(
         kf_proc_std=kf_proc_std,
         wind_process_std=wind_process_std,
     )
-    Sigma_attack = (float(attack_std) ** 2) * np.eye(4, dtype=np.float32)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
     rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
@@ -449,9 +452,11 @@ def rollout_episode_return_random_attack_kf_wolf(
         obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
 
         if do_attack:
+            attack_center = m_pred.copy()
+            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
             obs_random = attack_mod.sample_uniform_from_attack_region(
-                center=obs_clean,
-                Sigma=Sigma_attack,
+                center=attack_center,
+                Sigma=attack_sigma,
                 epsilon=attack_eps,
                 rng=rng_attack_sample,
             )
@@ -502,7 +507,6 @@ def compute_accumulated_reward_data_with_wolf(
     seed0: int,
     model_path: str,
     noise_std: float,
-    attack_std: float,
     attack_eps: float,
     attack_prob: float,
     kf_meas_std: float,
@@ -601,10 +605,9 @@ def compute_accumulated_reward_data_with_wolf(
             kf_proc_std=kf_proc_std,
             device=device,
         )
-        ret_attack = attack_mod.rollout_episode_return_attack_kf(
+        ret_attack = rollout_episode_return_attack_kf_policyobs(
             env_attack,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -615,10 +618,9 @@ def compute_accumulated_reward_data_with_wolf(
             seed_for_attack=seed,
             device=device,
         )
-        ret_random = attack_mod.rollout_episode_return_random_attack_kf(
+        ret_random = rollout_episode_return_random_attack_kf_policyobs(
             env_random,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -629,7 +631,6 @@ def compute_accumulated_reward_data_with_wolf(
         ret_attack_wolf_imq = rollout_episode_return_attack_kf_wolf(
             env_attack_wolf_imq,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -646,7 +647,6 @@ def compute_accumulated_reward_data_with_wolf(
         ret_attack_wolf_tmd = rollout_episode_return_attack_kf_wolf(
             env_attack_wolf_tmd,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -663,7 +663,6 @@ def compute_accumulated_reward_data_with_wolf(
         ret_random_wolf_imq = rollout_episode_return_random_attack_kf_wolf(
             env_random_wolf_imq,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -677,7 +676,6 @@ def compute_accumulated_reward_data_with_wolf(
         ret_random_wolf_tmd = rollout_episode_return_random_attack_kf_wolf(
             env_random_wolf_tmd,
             model,
-            attack_std=attack_std,
             attack_eps=attack_eps,
             attack_prob=attack_prob,
             kf_meas_std=kf_meas_std,
@@ -721,7 +719,6 @@ def compute_accumulated_reward_data_with_wolf(
             ret_attack_cov = rollout_episode_return_attack_kf_covadapt(
                 env_attack_cov,
                 model,
-                attack_std=attack_std,
                 attack_eps=attack_eps,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,
@@ -739,7 +736,6 @@ def compute_accumulated_reward_data_with_wolf(
             ret_random_cov = rollout_episode_return_random_attack_kf_covadapt(
                 env_random_cov,
                 model,
-                attack_std=attack_std,
                 attack_eps=attack_eps,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,
@@ -773,7 +769,6 @@ def compute_accumulated_reward_data_with_wolf(
         "n_episodes": int(n_episodes),
         "seed0": int(seed0),
         "noise_std": float(noise_std),
-        "attack_std": float(attack_std),
         "attack_eps": float(attack_eps),
         "attack_prob": float(attack_prob),
         "kf_meas_std": float(kf_meas_std),
@@ -1152,14 +1147,13 @@ def main() -> None:
     """
     model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
     device = "cpu"
-    noise_std = 0.5
+    noise_std = 0.6
     attack_prob = 0.15
-    attack_std = noise_std
     attack_eps_values = (0.75, 0.95)
     kf_meas_std = noise_std
     kf_proc_std = 0.03
-    pgd_steps = 65
-    pgd_step_size = 0.25
+    pgd_steps = 120
+    pgd_step_size = 0.35
     mc_samples = 256
     n_episodes = 100
     seed0 = 1_000
@@ -1172,7 +1166,7 @@ def main() -> None:
     # observations earlier than in the initial comparison setup.
     wolf_imq_soft_threshold = 0.55
     wolf_tmd_threshold = 2.5
-    force_cache = False
+    force_cache = True
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found at:\n  {model_path}")
@@ -1210,7 +1204,6 @@ def main() -> None:
                 seed0=seed0,
                 model_path=model_path,
                 noise_std=noise_std,
-                attack_std=attack_std,
                 attack_eps=attack_eps_value,
                 attack_prob=attack_prob,
                 kf_meas_std=kf_meas_std,

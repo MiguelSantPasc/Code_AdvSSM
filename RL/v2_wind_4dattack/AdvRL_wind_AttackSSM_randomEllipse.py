@@ -92,7 +92,7 @@ KF_MEAS_STD = NOISE_STD
 KF_PROC_STD = 0.03
 
 # PGD / MC for attack
-PGD_STEPS = 65  
+PGD_STEPS = 65
 PGD_STEP_SIZE = 0.25
 MC_SAMPLES = 256
 
@@ -444,6 +444,7 @@ def pgd_attack_on_expected_value(
     goal: np.ndarray,
     goal_r_max: float,
     attack_sigma: np.ndarray,
+    attack_center: np.ndarray | None = None,
     attack_eps: float,
     pgd_steps: int,
     pgd_step_size: float,
@@ -453,8 +454,11 @@ def pgd_attack_on_expected_value(
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """
     Solve approximately with PGD:
-        min_{z' in ellipsoid(z_nom, attack_sigma, attack_eps)}
+        min_{z' in ellipsoid(center, attack_sigma, attack_eps)}
             E_{x ~ p(x | z'_pos, history)} [V([delta(x), z'_wind])]
+
+    If `attack_center` is not provided, the ellipsoid is centered at the
+    nominal observation `obs_nom`, preserving the original script behavior.
 
     Returns:
       obs_star    attacked 4D policy observation
@@ -469,7 +473,13 @@ def pgd_attack_on_expected_value(
     gen.manual_seed(int(rng_seed))
     xi_torch = torch.randn((mc_samples, 2), generator=gen, device=dev, dtype=torch.float32)
 
-    obs_curr_np = obs_nom.astype(np.float32).copy()
+    center = obs_nom.astype(np.float32).copy() if attack_center is None else np.asarray(attack_center, dtype=np.float32).copy()
+    obs_curr_np = project_to_attack_region(
+        y_candidate=obs_nom.astype(np.float32).copy(),
+        center=center,
+        Sigma=attack_sigma,
+        epsilon=attack_eps,
+    )
 
     best_obs = obs_curr_np.copy()
     best_obj = None
@@ -499,7 +509,7 @@ def pgd_attack_on_expected_value(
 
         obs_next = project_to_attack_region(
             y_candidate=obs_next,
-            center=obs_nom,
+            center=center,
             Sigma=attack_sigma,
             epsilon=attack_eps,
         )

@@ -9,9 +9,15 @@ controlled observation-corruption baseline. The wrapper observes:
 where s_t is the Gymnasium CartPole state. The trained DQN action is evaluated
 on clean observations and on several noise levels, then the script saves the
 episode-return arrays and a return-vs-noise summary plot.
+
+Training note:
+1. The DQN exploration schedule is epsilon-greedy.
+2. `exploration_final_eps` sets the minimum epsilon reached at the end of the
+   decay phase.
+3. During training we print the current epsilon percentage each time one
+   episode finishes so the exploration schedule is easy to track.
 """
 
-import os
 from pathlib import Path
 
 import gymnasium as gym
@@ -19,6 +25,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from stable_baselines3 import DQN
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 
 
@@ -40,6 +47,36 @@ class NoisyObs(gym.ObservationWrapper):
         return (obs + noise).astype(np.float32)
 
 
+class EpisodeEpsilonLogger(BaseCallback):
+    """Print the current epsilon percentage when each training episode ends."""
+
+    def __init__(self):
+        super().__init__()
+        self.episode_idx = 0
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+
+        for done, info in zip(dones, infos):
+            if not done:
+                continue
+
+            self.episode_idx += 1
+            epsilon_pct = 100.0 * float(getattr(self.model, "exploration_rate", 0.0))
+            episode_info = info.get("episode", {})
+            episode_reward = float(episode_info.get("r", np.nan))
+            episode_length = int(episode_info.get("l", 0))
+            print(
+                f"[train] episode={self.episode_idx:04d} | "
+                f"epsilon={epsilon_pct:.2f}% | "
+                f"return={episode_reward:.1f} | "
+                f"length={episode_length}"
+            )
+
+        return True
+
+
 def evaluate_returns(model, env, n_episodes=200, seed=123):
     """Return (reward acumulado por episodio) en n_episodes."""
     returns = np.zeros(n_episodes, dtype=np.float32)
@@ -57,6 +94,12 @@ def evaluate_returns(model, env, n_episodes=200, seed=123):
 
 
 def main():
+    # Main knobs kept here so they are easy to edit later.
+    force_retrain = False
+    total_timesteps = 200_000
+    exploration_fraction = 0.2
+    exploration_final_eps = 0.10
+
     # Project structure
     script_dir = Path(__file__).resolve().parent
     outputs_dir = script_dir / "outputs"
@@ -76,7 +119,7 @@ def main():
     # -------------------------
     # Entrenar (solo si NO existe el modelo)
     # -------------------------
-    if model_path.exists():
+    if model_path.exists() and not force_retrain:
         # Cargar modelo existente
         model = DQN.load(str(model_path))
         print(f"[OK] Modelo cargado: {model_path.name}")
@@ -95,14 +138,13 @@ def main():
             gamma=0.99,
             train_freq=4,
             target_update_interval=1_000,
-            exploration_fraction=0.2,
-            exploration_final_eps=0.02,
+            exploration_fraction=exploration_fraction,
+            exploration_final_eps=exploration_final_eps,
             verbose=0,  # <- silencio
             seed=0,
         )
 
-        total_timesteps = 200_000
-        model.learn(total_timesteps=total_timesteps)
+        model.learn(total_timesteps=total_timesteps, callback=EpisodeEpsilonLogger())
 
         model.save(str(model_path))
         train_env.close()
