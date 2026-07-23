@@ -244,14 +244,9 @@ def make_env_with_separate_obs_rng(AdvRL2DEnv_base):
             self.rng_obs = np.random.default_rng(int(cfg.seed) + 12345)
             super().__init__(cfg)
 
-        def _measure_position(self) -> np.ndarray:
+        def _measure_observation_state(self) -> np.ndarray:
             y = (self.F @ self.x_ssm).astype(np.float32)
-            if self.cfg.obs_noise_std > 0:
-                v = self.rng_obs.normal(
-                    0.0, self.cfg.obs_noise_std, size=(2,)
-                ).astype(np.float32)
-                y = y + v
-            return y.astype(np.float32)
+            return (y + self._sample_observation_noise()).astype(np.float32)
 
     return AdvRL2DEnv_SeparateObsRNG
 
@@ -302,6 +297,31 @@ def build_policy_obs_from_position(
         [delta[0], delta[1], wind_xy[0], wind_xy[1]],
         dtype=np.float32,
     )
+
+
+def measurement_state_to_policy_obs(
+    meas_state: np.ndarray,
+    goal: np.ndarray,
+    goal_r_max: float,
+) -> np.ndarray:
+    """Map the 4D measured physical state into the 4D policy observation."""
+    meas_state = np.asarray(meas_state, dtype=np.float32).reshape(4)
+    return build_policy_obs_from_position(
+        pos=meas_state[:2],
+        goal=np.asarray(goal, dtype=np.float32).reshape(2),
+        goal_r_max=goal_r_max,
+        wind_xy=meas_state[2:4],
+    )
+
+
+def policy_obs_to_measurement_state(
+    obs: np.ndarray,
+    goal: np.ndarray,
+    goal_r_max: float,
+) -> np.ndarray:
+    """Invert the policy observation back into the 4D measured state."""
+    pos, wind_xy = split_policy_obs(obs, goal, goal_r_max)
+    return np.concatenate([pos, wind_xy]).astype(np.float32)
 
 
 # ============================================================
@@ -369,6 +389,49 @@ def kf_predict_position(
     return m_next.astype(np.float32), P_next.astype(np.float32)
 
 
+def kf_update_state(
+    m_pred: np.ndarray,
+    P_pred: np.ndarray,
+    y_obs: np.ndarray,
+    R: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run one 4D KF update in the shared physical-state coordinates."""
+    m_pred = np.asarray(m_pred, dtype=np.float32).reshape(4)
+    P_pred = project_to_psd(np.asarray(P_pred, dtype=np.float32))
+    y_obs = np.asarray(y_obs, dtype=np.float32).reshape(4)
+    R = project_to_psd(np.asarray(R, dtype=np.float32))
+
+    I4 = np.eye(4, dtype=np.float32)
+    S = project_to_psd(P_pred + R)
+    K = P_pred @ np.linalg.inv(S)
+    innov = y_obs - m_pred
+    m_post = m_pred + K @ innov
+    joseph_left = I4 - K
+    P_post = joseph_left @ P_pred @ joseph_left.T + K @ R @ K.T
+    return m_post.astype(np.float32), project_to_psd(P_post), K.astype(np.float32)
+
+
+def kf_predict_state(
+    m_post: np.ndarray,
+    P_post: np.ndarray,
+    A_t: np.ndarray,
+    B: np.ndarray,
+    action: np.ndarray,
+    Q: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run one 4D KF prediction using the shared physical SSM."""
+    m_post = np.asarray(m_post, dtype=np.float32).reshape(4)
+    P_post = project_to_psd(np.asarray(P_post, dtype=np.float32))
+    A_t = np.asarray(A_t, dtype=np.float32).reshape(4, 4)
+    B = np.asarray(B, dtype=np.float32).reshape(4, 2)
+    action = np.asarray(action, dtype=np.float32).reshape(2)
+    Q = project_to_psd(np.asarray(Q, dtype=np.float32))
+
+    m_next = A_t @ m_post + B @ action
+    P_next = project_to_psd(A_t @ P_post @ A_t.T + Q)
+    return m_next.astype(np.float32), P_next.astype(np.float32)
+
+
 # ============================================================
 # Expected critic value under posterior
 #   mu_V(z') = E_{x ~ p(x | z'_pos, history)} [V([delta(x), z'_wind])]
@@ -428,6 +491,62 @@ def expected_critic_value_mc(
     wind_batch = wind_adv_t.unsqueeze(0).repeat(x_samples.shape[0], 1)
     obs_batch = torch.cat([delta, wind_batch], dim=1)
 
+    v_batch = critic_values(model, obs_batch)
+    mu_V = v_batch.mean()
+
+    return mu_V, m_post_t.detach().cpu().numpy().astype(np.float32), P_post_np
+
+
+def expected_critic_value_mc_state4d(
+    *,
+    model,
+    obs_adv_torch: torch.Tensor,
+    m_pred: np.ndarray,
+    P_pred: np.ndarray,
+    R: np.ndarray,
+    goal: np.ndarray,
+    goal_r_max: float,
+    xi_torch: torch.Tensor,
+    device: str = "cpu",
+) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
+    """
+    Critic expectation induced by an attacked 4D policy observation.
+
+    The posterior is computed in the shared physical state
+        s_t = [p_x,t, p_y,t, d_x,t, d_y,t]^T,
+    and the Monte Carlo samples are mapped back into the policy coordinates only
+    right before evaluating the critic.
+    """
+    dev = torch.device(device)
+
+    m_pred_t = torch.tensor(m_pred, dtype=torch.float32, device=dev)
+    P_pred_t = torch.tensor(P_pred, dtype=torch.float32, device=dev)
+    R_t = torch.tensor(R, dtype=torch.float32, device=dev)
+    goal_t = torch.tensor(goal, dtype=torch.float32, device=dev)
+
+    y_adv_t = torch.cat(
+        [
+            goal_t - float(goal_r_max) * obs_adv_torch[:2],
+            obs_adv_torch[2:4],
+        ]
+    )
+
+    S_t = P_pred_t + R_t
+    K_t = P_pred_t @ torch.linalg.inv(S_t)
+    innov_t = y_adv_t - m_pred_t
+    m_post_t = m_pred_t + K_t @ innov_t
+
+    I4 = torch.eye(4, dtype=torch.float32, device=dev)
+    joseph_left = I4 - K_t
+    P_post_t = joseph_left @ P_pred_t @ joseph_left.T + K_t @ R_t @ K_t.T
+
+    P_post_np = project_to_psd(P_post_t.detach().cpu().numpy().astype(np.float32))
+    L_np = sqrtm_psd(P_post_np)
+    L_t = torch.tensor(L_np, dtype=torch.float32, device=dev)
+
+    state_samples = m_post_t.unsqueeze(0) + xi_torch @ L_t.T
+    delta_batch = (goal_t.unsqueeze(0) - state_samples[:, :2]) / float(goal_r_max)
+    obs_batch = torch.cat([delta_batch, state_samples[:, 2:4]], dim=1)
     v_batch = critic_values(model, obs_batch)
     mu_V = v_batch.mean()
 
@@ -526,6 +645,103 @@ def pgd_attack_on_expected_value(
     # final evaluation at last point
     obs_t = torch.tensor(obs_curr_np, dtype=torch.float32, device=dev, requires_grad=True)
     mu_V_t, m_post_np, P_post_np = expected_critic_value_mc(
+        model=model,
+        obs_adv_torch=obs_t,
+        m_pred=m_pred,
+        P_pred=P_pred,
+        R=R,
+        goal=goal,
+        goal_r_max=goal_r_max,
+        xi_torch=xi_torch,
+        device=device,
+    )
+    obj_val = float(mu_V_t.detach().cpu().item())
+
+    if best_obj is None or obj_val < best_obj:
+        best_obj = obj_val
+        best_obs = obs_curr_np.copy()
+        best_m_post = m_post_np.copy()
+        best_P_post = P_post_np.copy()
+
+    return best_obs, float(best_obj), best_m_post, best_P_post
+
+
+def pgd_attack_on_expected_value_state4d(
+    *,
+    model,
+    obs_nom: np.ndarray,
+    m_pred: np.ndarray,
+    P_pred: np.ndarray,
+    R: np.ndarray,
+    goal: np.ndarray,
+    goal_r_max: float,
+    attack_sigma: np.ndarray,
+    attack_center: np.ndarray | None = None,
+    attack_eps: float,
+    pgd_steps: int,
+    pgd_step_size: float,
+    mc_samples: int,
+    rng_seed: int,
+    device: str = "cpu",
+) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
+    """
+    PGD attack that keeps the posterior model in the shared 4D physical state.
+    """
+    dev = torch.device(device)
+
+    gen = torch.Generator(device=dev)
+    gen.manual_seed(int(rng_seed))
+    xi_torch = torch.randn((mc_samples, 4), generator=gen, device=dev, dtype=torch.float32)
+
+    center = obs_nom.astype(np.float32).copy() if attack_center is None else np.asarray(attack_center, dtype=np.float32).copy()
+    obs_curr_np = project_to_attack_region(
+        y_candidate=obs_nom.astype(np.float32).copy(),
+        center=center,
+        Sigma=attack_sigma,
+        epsilon=attack_eps,
+    )
+
+    best_obs = obs_curr_np.copy()
+    best_obj = None
+    best_m_post = None
+    best_P_post = None
+
+    for _ in range(pgd_steps):
+        obs_t = torch.tensor(obs_curr_np, dtype=torch.float32, device=dev, requires_grad=True)
+
+        mu_V_t, m_post_np, P_post_np = expected_critic_value_mc_state4d(
+            model=model,
+            obs_adv_torch=obs_t,
+            m_pred=m_pred,
+            P_pred=P_pred,
+            R=R,
+            goal=goal,
+            goal_r_max=goal_r_max,
+            xi_torch=xi_torch,
+            device=device,
+        )
+
+        mu_V_t.backward()
+        grad = obs_t.grad.detach().cpu().numpy().astype(np.float32)
+        obs_next = obs_curr_np - float(pgd_step_size) * grad
+        obs_next = project_to_attack_region(
+            y_candidate=obs_next,
+            center=center,
+            Sigma=attack_sigma,
+            epsilon=attack_eps,
+        )
+
+        obj_val = float(mu_V_t.detach().cpu().item())
+        if best_obj is None or obj_val < best_obj:
+            best_obj = obj_val
+            best_obs = obs_curr_np.copy()
+            best_m_post = m_post_np.copy()
+            best_P_post = P_post_np.copy()
+
+        obs_curr_np = obs_next
+
+    obs_t = torch.tensor(obs_curr_np, dtype=torch.float32, device=dev, requires_grad=True)
+    mu_V_t, m_post_np, P_post_np = expected_critic_value_mc_state4d(
         model=model,
         obs_adv_torch=obs_t,
         m_pred=m_pred,

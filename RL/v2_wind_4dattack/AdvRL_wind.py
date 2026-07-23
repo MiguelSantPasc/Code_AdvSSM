@@ -2,57 +2,59 @@
 """
 Train and visualize the wind-driven 2D point-agent policy.
 
-The environment is written as an SSM-style control problem with augmented
-state x_t = [p_x, p_y, 1]^T:
+This file implements the RL environment as the same 4D linear-Gaussian
+state-space model later reused by the attack and filtering benchmarks. The
+latent state is
 
-    x_{t+1} = A_t x_t + B a_t_aug + w_t
-    y_t     = F x_t + v_t
+    s_t = [p_x,t, p_y,t, d_x,t, d_y,t]^T,
 
-where A_t injects wind through the homogeneous coordinate,
+where the first two coordinates are the true position and the last two are the
+current wind-displacement vector. The stochastic dynamics are
 
-    A_t = [[1, 0, epsilon cos(psi_t)],
-           [0, 1, epsilon sin(psi_t)],
-           [0, 0, 1]],
+    s_{t+1} = A_t s_t + B a_t + w_t,
+    o_t     = F s_t + v_t,
 
-and the policy observes z_t = [(goal - y_t) / goal_r_max, wind_x, wind_y].
-This file owns the environment, actor-critic model, PPO training loop, rollout
-collection, and basic trajectory/value plots for the wind case.
+with F = I_4. The position is then converted into the policy input
+
+    z_t = [ (goal - p_t) / goal_r_max, d_x,t, d_y,t ].
+
+Using the same physical state in both the environment and the defended filter
+keeps the RL benchmark aligned with the mathematical model described in the
+project notes.
 """
 
 # AdvRL_wind.py
 # RL experiment: 2D point agent with WIND dynamics formalized as an SSM.
 #
-# SSM-inspired model (augmented state):
-#   x_t = [p_x, p_y, 1]^T in R^3
+# SSM-inspired model (shared physical state):
+#   s_t = [p_x, p_y, d_x, d_y]^T in R^4
 #
-#   x_{t+1} = A_t x_t + B a_t_aug + w_t
-#   y_t     = F x_t + v_t
+#   s_{t+1} = A_t s_t + B a_t + w_t
+#   o_t     = F s_t + v_t
 #
 # where:
-#   A_t = [[1, 0, eps*cos(psi_t)],
-#          [0, 1, eps*sin(psi_t)],
-#          [0, 0, 1]]
+#   A_t = [[1, 0, 1, 0],
+#          [0, 1, 0, 1],
+#          [0, 0, rho_w*cos(delta_psi_t), -rho_w*sin(delta_psi_t)],
+#          [0, 0, rho_w*sin(delta_psi_t),  rho_w*cos(delta_psi_t)]]
 #
-#   B   = [[1, 0, 0],
-#          [0, 1, 0],
-#          [0, 0, 0]]
+#   B   = [[1, 0],
+#          [0, 1],
+#          [0, 0],
+#          [0, 0]]
 #
-# NEW ACTION (2D):
 #   a_t = [a_x, a_y] in [-1,1]^2
-#   a_t_aug = [a_x, a_y, 0]^T
-# -> Max step length is sqrt(2).
 #
 # RL observation returned to policy (4D):
-#   z_t = [ (goal - y_t)/goal_r_max, wind_x_t, wind_y_t ]
+#   z_t = [ (goal - o_{p,t})/goal_r_max, o_{d_x,t}, o_{d_y,t} ]
 #
 # Rewards:
-#   -1 per step (until done)
-#   +40 on success
-#   -40 on timeout
+#   -1 per step until done
+#   + terminal reward on success
+#   + terminal penalty on timeout
 #
-# No noise (default here): obs_noise_std=0, proc_noise_std=0
-#
-# Saves model to: RL/v2_wind/outputs/saved_models/AdvRL_v2_policy.pt
+# Saves model to:
+#   RL/v2_wind_4dattack/outputs/saved_models/AdvRL_v3_shared4d_clean_policy.pt
 
 from __future__ import annotations
 
@@ -76,6 +78,39 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
+MODEL_FILENAME = "AdvRL_v3_shared4d_clean_policy.pt"
+LEGACY_MODEL_FILENAMES = (
+    "AdvRL_v2_policy.pt",
+    "AdvRL_v2_nowind_policy.pt",
+)
+
+
+def default_policy_model_path() -> str:
+    """Return the checkpoint path for the shared-SSM clean policy."""
+    return os.path.join(_THIS_DIR, "outputs", "saved_models", MODEL_FILENAME)
+
+
+def warm_start_policy_model_path() -> str | None:
+    """
+    Return the best available checkpoint to continue training from.
+
+    Preference order:
+    1. the current shared-SSM checkpoint if it already exists,
+    2. otherwise the older wind-policy checkpoint,
+    3. otherwise the older no-wind checkpoint.
+    """
+    candidate_paths = [default_policy_model_path()]
+    candidate_paths.extend(
+        os.path.join(_THIS_DIR, "outputs", "saved_models", filename)
+        for filename in LEGACY_MODEL_FILENAMES
+    )
+
+    for candidate_path in candidate_paths:
+        if os.path.exists(candidate_path):
+            return candidate_path
+    return None
+
+
 # -----------------------------
 # Environment (SSM-style with Wind)
 # -----------------------------
@@ -85,17 +120,33 @@ class AdvRLEnvConfig:
     goal_r_min: float = 5.0
     goal_r_max: float = 15.0
 
-    # SSM noises
-    obs_noise_std: float = 0.00   # sigma_v (measurement noise)
-    proc_noise_std: float = 0.00  # sigma_w (process noise on transition)
+    # Legacy scalar noise knobs kept so older scripts can still tweak the
+    # environment without needing the full covariance parameterization.
+    obs_noise_std: float = 0.00
+    proc_noise_std: float = 0.00
 
     max_steps: int = 40
     goal_radius: float = 0.35
     seed: int = 0
 
-    # Wind parameters
-    wind_epsilon: float = 0.85       # epsilon in A_t
-    wind_volatility: float = 0.25    # random walk std for psi_t
+    # Wind parameters of the shared 4D SSM.
+    wind_epsilon: float = 0.85
+    wind_volatility: float = 0.25
+    wind_persistence: float = 0.92
+
+    # Optional per-block process-noise overrides.
+    position_process_std: float | None = None
+    wind_process_std: float | None = None
+    position_process_corr: float = 0.0
+    wind_process_corr: float = 0.0
+    process_cross_corr: float = 0.10
+
+    # Observation-noise parameters for the 4D measurement `o_t = s_t + v_t`.
+    obs_position_std: float | None = None
+    obs_wind_std: float | None = None
+    obs_position_corr: float = 0.20
+    obs_wind_corr: float = 0.20
+    obs_cross_corr: float = 0.08
 
     # Rewards (sparse)
     step_penalty: float = -1.0
@@ -105,46 +156,36 @@ class AdvRLEnvConfig:
 
 class AdvRL2DEnv:
     """
-    SSM-based environment.
+    Environment backed by the shared 4D physical SSM.
 
-    Hidden augmented state:
-        x_t = [p_x, p_y, 1]^T in R^3
+    Hidden state:
+        s_t = [p_x,t, p_y,t, d_x,t, d_y,t]^T
 
-    Transition:
-        x_{t+1} = A_t x_t + B a_t_aug + w_t
-        A_t = [[1, 0, eps*cos(psi_t)],
-               [0, 1, eps*sin(psi_t)],
-               [0, 0, 1]]
-        B   = [[1, 0, 0],
-               [0, 1, 0],
-               [0, 0, 0]]
-        a_t_aug = [a_x, a_y, 0]^T   with a_x,a_y in [-1,1]
+    Dynamics:
+        s_{t+1} = A_t s_t + B a_t + w_t
 
-    Measurement:
-        y_t = F x_t + v_t,   F = [[1,0,0],[0,1,0]]
+    Observation:
+        o_t = F s_t + v_t,  with F = I_4
 
-    RL observation:
-        z_t = [delta_x, delta_y, wind_x, wind_y] in R^4,
-        where delta = (goal - y_meas) / goal_r_max (normalized).
+    Policy input:
+        z_t = [(g_x - o_{p_x,t})/R_max,
+               (g_y - o_{p_y,t})/R_max,
+               o_{d_x,t},
+               o_{d_y,t}]^T
     """
 
     def __init__(self, cfg: AdvRLEnvConfig):
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
-
-        # Measurement matrix F (2x3)
-        self.F = np.array(
-            [[1.0, 0.0, 0.0],
-             [0.0, 1.0, 0.0]],
-            dtype=np.float32
-        )
-
-        # Control matrix B (3x3)
+        self.F = np.eye(4, dtype=np.float32)
         self.B = np.array(
-            [[1.0, 0.0, 0.0],
-             [0.0, 1.0, 0.0],
-             [0.0, 0.0, 0.0]],
-            dtype=np.float32
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+            dtype=np.float32,
         )
 
         self.reset()
@@ -154,55 +195,188 @@ class AdvRL2DEnv:
         """Wrap angle to [-pi, pi]."""
         return (x + math.pi) % (2.0 * math.pi) - math.pi
 
-    def _A_t(self) -> np.ndarray:
-        eps = float(self.cfg.wind_epsilon)
-        c = math.cos(self.psi)
-        s = math.sin(self.psi)
+    @staticmethod
+    def _project_to_psd(M: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+        """Return a numerically safe PSD approximation of `M`."""
+        sym = 0.5 * (M + M.T)
+        eigvals, eigvecs = np.linalg.eigh(np.asarray(sym, dtype=np.float64))
+        eigvals = np.maximum(eigvals, eps)
+        return (eigvecs @ np.diag(eigvals) @ eigvecs.T).astype(np.float32)
+
+    @staticmethod
+    def _corr_2x2(std_value: float, corr: float) -> np.ndarray:
+        """Return a 2x2 covariance block with shared marginal std."""
+        std_value = float(max(std_value, 0.0))
+        corr = float(np.clip(corr, -0.95, 0.95))
         return np.array(
-            [[1.0, 0.0, eps * c],
-             [0.0, 1.0, eps * s],
-             [0.0, 0.0, 1.0]],
-            dtype=np.float32
+            [
+                [std_value**2, corr * std_value**2],
+                [corr * std_value**2, std_value**2],
+            ],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _cross_block_2x2(std_left: float, std_right: float, corr: float) -> np.ndarray:
+        """
+        Return a dense 2x2 cross-covariance block.
+
+        Using a dense block instead of a diagonal-only coupling means the
+        position and wind coordinates are correlated in every direction of the
+        4D state, as requested by the shared RL covariance-adaptation setup.
+        """
+        std_left = float(max(std_left, 0.0))
+        std_right = float(max(std_right, 0.0))
+        corr = float(np.clip(corr, -0.95, 0.95))
+        return np.full(
+            (2, 2),
+            corr * std_left * std_right,
+            dtype=np.float32,
+        )
+
+    def _position_process_std(self) -> float:
+        value = self.cfg.position_process_std
+        return float(self.cfg.proc_noise_std if value is None else value)
+
+    def _wind_process_std(self) -> float:
+        value = self.cfg.wind_process_std
+        return float(self.cfg.proc_noise_std if value is None else value)
+
+    def _obs_position_std(self) -> float:
+        value = self.cfg.obs_position_std
+        return float(self.cfg.obs_noise_std if value is None else value)
+
+    def _obs_wind_std(self) -> float:
+        value = self.cfg.obs_wind_std
+        return float(self.cfg.obs_noise_std if value is None else value)
+
+    def process_covariance(self) -> np.ndarray:
+        """Return the 4D process covariance used by the environment SSM."""
+        pos_std = self._position_process_std()
+        wind_std = self._wind_process_std()
+        pos_block = self._corr_2x2(
+            pos_std,
+            self.cfg.position_process_corr,
+        )
+        wind_block = self._corr_2x2(
+            wind_std,
+            self.cfg.wind_process_corr,
+        )
+        cross_block = self._cross_block_2x2(
+            pos_std,
+            wind_std,
+            self.cfg.process_cross_corr,
+        )
+        cov = np.block(
+            [
+                [pos_block, cross_block],
+                [cross_block.T, wind_block],
+            ]
+        )
+        return self._project_to_psd(cov)
+
+    def observation_covariance(self) -> np.ndarray:
+        """Return the correlated 4D observation covariance used in `o_t = s_t + v_t`."""
+        pos_std = self._obs_position_std()
+        wind_std = self._obs_wind_std()
+        pos_block = self._corr_2x2(pos_std, self.cfg.obs_position_corr)
+        wind_block = self._corr_2x2(wind_std, self.cfg.obs_wind_corr)
+        cross_block = self._cross_block_2x2(
+            pos_std,
+            wind_std,
+            self.cfg.obs_cross_corr,
+        )
+        cov = np.block(
+            [
+                [pos_block, cross_block],
+                [cross_block.T, wind_block],
+            ]
+        )
+        return self._project_to_psd(cov)
+
+    def build_transition_matrix(self, delta_psi: float) -> np.ndarray:
+        """Return the shared physical transition matrix for one time step."""
+        rho_w = float(self.cfg.wind_persistence)
+        c = math.cos(delta_psi)
+        s = math.sin(delta_psi)
+        return np.array(
+            [
+                [1.0, 0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, rho_w * c, -rho_w * s],
+                [0.0, 0.0, rho_w * s, rho_w * c],
+            ],
+            dtype=np.float32,
         )
 
     def _wind_vec(self) -> np.ndarray:
-        return np.array(
-            [self.cfg.wind_epsilon * math.cos(self.psi),
-             self.cfg.wind_epsilon * math.sin(self.psi)],
-            dtype=np.float32
-        )
+        """Return the current true wind vector stored in the latent state."""
+        return self.x_ssm[2:4].astype(np.float32).copy()
+
+    def _sample_observation_noise(self) -> np.ndarray:
+        """Sample the 4D observation noise using the configured covariance."""
+        cov = self.observation_covariance().astype(np.float64)
+        if float(np.max(np.abs(cov))) <= 1e-12:
+            return np.zeros(4, dtype=np.float32)
+        obs_rng = getattr(self, "rng_obs", self.rng)
+        return obs_rng.multivariate_normal(
+            mean=np.zeros(4, dtype=np.float64),
+            cov=cov,
+        ).astype(np.float32)
+
+    def _sample_process_noise(self) -> np.ndarray:
+        """Sample the 4D process noise using the configured covariance."""
+        cov = self.process_covariance().astype(np.float64)
+        if float(np.max(np.abs(cov))) <= 1e-12:
+            return np.zeros(4, dtype=np.float32)
+        return self.rng.multivariate_normal(
+            mean=np.zeros(4, dtype=np.float64),
+            cov=cov,
+        ).astype(np.float32)
+
+    def _measure_observation_state(self) -> np.ndarray:
+        """Return the noisy 4D observation `o_t = s_t + v_t`."""
+        y = (self.F @ self.x_ssm).astype(np.float32)
+        return (y + self._sample_observation_noise()).astype(np.float32)
 
     def _measure_position(self) -> np.ndarray:
         """
-        y_t = F x_t + v_t in R^2.
-        If obs_noise_std=0 -> noise-free.
+        Compatibility helper returning only the measured position block.
+
+        Older scripts in the repo override `_measure_position`; keeping this
+        method avoids hard failures while the benchmark migrates to the shared
+        4D observation model.
         """
-        y = (self.F @ self.x_ssm).astype(np.float32)
-        if self.cfg.obs_noise_std > 0:
-            v = self.rng.normal(0.0, self.cfg.obs_noise_std, size=(2,)).astype(np.float32)
-            y = y + v
-        return y.astype(np.float32)
+        return self._measure_observation_state()[:2].astype(np.float32)
 
     def _build_rl_obs(self) -> np.ndarray:
         """
-        RL obs z_t = [delta_x, delta_y, wind_x, wind_y],
-        where delta = (goal - y_meas) / goal_r_max.
+        Build the policy input from the noisy 4D observation state.
         """
-        y = self.y_meas
-        delta = (self.goal - y).astype(np.float32)
+        y_pos = self.y_meas[:2].astype(np.float32)
+        y_wind = self.y_meas[2:4].astype(np.float32)
+        delta = (self.goal - y_pos).astype(np.float32)
 
         denom = float(self.cfg.goal_r_max) if self.cfg.goal_r_max > 0 else 1.0
-        delta = delta / denom  # IMPORTANT (you had this bugged before)
+        delta = delta / denom
 
-        wind_vec = self._wind_vec()
-        return np.concatenate([delta, wind_vec]).astype(np.float32)
+        return np.concatenate([delta, y_wind]).astype(np.float32)
 
     # Gym-like API
     def reset(self) -> np.ndarray:
         self.t = 0
 
-        # Hidden augmented state x_0 = [0,0,1]
-        self.x_ssm = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        # Hidden 4D state s_0 = [0, 0, d_x, d_y].
+        psi0 = float(self.rng.uniform(-math.pi, math.pi))
+        self.psi = self._wrap_angle_pi(psi0)
+        d0 = np.array(
+            [
+                float(self.cfg.wind_epsilon) * math.cos(self.psi),
+                float(self.cfg.wind_epsilon) * math.sin(self.psi),
+            ],
+            dtype=np.float32,
+        )
+        self.x_ssm = np.array([0.0, 0.0, d0[0], d0[1]], dtype=np.float32)
         self.x = self.x_ssm[:2].copy()
 
         # Sample random goal
@@ -210,61 +384,42 @@ class AdvRL2DEnv:
         ang = float(self.rng.uniform(-math.pi, math.pi))
         self.goal = np.array([r * math.cos(ang), r * math.sin(ang)], dtype=np.float32)
 
-        # Initial wind direction psi_0
-        self.psi = float(self.rng.uniform(-math.pi, math.pi))
-        self.psi = self._wrap_angle_pi(self.psi)
-
-        # Initial measurement y_0
-        self.y_meas = self._measure_position()
+        self.last_delta_psi = 0.0
+        self.last_A_t = self.build_transition_matrix(self.last_delta_psi)
+        self.y_meas = self._measure_observation_state()
 
         return self._build_rl_obs()
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         self.t += 1
 
-        # Action = 2D step vector in [-1,1]^2
         ax = float(action[0])
         ay = float(action[1])
-
-        # Safety clamp
         ax = max(-1.0, min(1.0, ax))
         ay = max(-1.0, min(1.0, ay))
+        action_vec = np.array([ax, ay], dtype=np.float32)
 
-        # Augmented action in R^3
-        a_aug = np.array([ax, ay, 0.0], dtype=np.float32)
-
-        # Transition matrix using current psi_t
-        A_t = self._A_t()
+        delta_psi_t = float(self.rng.normal(0.0, self.cfg.wind_volatility))
+        A_t = self.build_transition_matrix(delta_psi_t)
+        process_noise = self._sample_process_noise()
         wind_vec_this_step = self._wind_vec().copy()
 
-        # Process noise (R^3); keep augmented coordinate exact
-        if self.cfg.proc_noise_std > 0:
-            w = self.rng.normal(0.0, self.cfg.proc_noise_std, size=(3,)).astype(np.float32)
-            w[2] = 0.0
-        else:
-            w = np.zeros(3, dtype=np.float32)
-
-        # SSM state update
-        self.x_ssm = (A_t @ self.x_ssm + self.B @ a_aug + w).astype(np.float32)
-        self.x_ssm[2] = 1.0  # keep augmented coordinate = 1
-
-        # Update true 2D position
+        self.x_ssm = (
+            A_t @ self.x_ssm
+            + self.B @ action_vec
+            + process_noise
+        ).astype(np.float32)
         self.x = self.x_ssm[:2].copy()
+        self.psi = self._wrap_angle_pi(float(math.atan2(self.x_ssm[3], self.x_ssm[2])))
+        self.last_delta_psi = delta_psi_t
+        self.last_A_t = A_t.copy()
+        self.y_meas = self._measure_observation_state()
 
-        # Evolve wind direction for NEXT step (random walk) + wrap
-        self.psi += float(self.rng.normal(0.0, self.cfg.wind_volatility))
-        self.psi = self._wrap_angle_pi(self.psi)
-
-        # New measurement
-        self.y_meas = self._measure_position()
-
-        # Termination based on TRUE position
         dist = float(np.linalg.norm(self.goal - self.x))
         done_success = dist <= self.cfg.goal_radius
         done_timeout = self.t >= self.cfg.max_steps
         done = bool(done_success or done_timeout)
 
-        # Reward
         if done_success:
             reward = float(self.cfg.success_reward)
         elif done_timeout:
@@ -284,9 +439,12 @@ class AdvRL2DEnv:
             "y_meas": self.y_meas.copy(),
             "wind_psi": float(self.psi),
             "wind_vec": wind_vec_this_step,
+            "delta_psi_t": float(delta_psi_t),
             "A_t": A_t.copy(),
             "B": self.B.copy(),
             "F": self.F.copy(),
+            "Q": self.process_covariance().copy(),
+            "R": self.observation_covariance().copy(),
             "action_xy": np.array([ax, ay], dtype=np.float32),
             "action_norm": float(math.hypot(ax, ay)),
         }
@@ -556,11 +714,7 @@ def run_episode_collect(env: AdvRL2DEnv, model: ActorCritic, device: str = "cpu"
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device_t)
         action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)  # (2,)
 
-        current_wind = np.array(
-            [env.cfg.wind_epsilon * math.cos(env.psi),
-             env.cfg.wind_epsilon * math.sin(env.psi)],
-            dtype=np.float32
-        )
+        current_wind = env._wind_vec()
         wind_list.append(current_wind)
 
         obs, r, done, info = env.step(action)
@@ -682,16 +836,22 @@ def plot_policy_on_one_trajectory(env: AdvRL2DEnv, model: ActorCritic, device: s
 # -----------------------------
 
 def main():
-    # No noise: deterministic measurement & transition
+    # Train on clean policy observations so the controller learns directly from
+    # the shared SSM state without measurement corruption.
     env_cfg = AdvRLEnvConfig(
         obs_noise_std=0.0,
         proc_noise_std=0.0,
+        obs_position_std=0.0,
+        obs_wind_std=0.0,
+        position_process_std=0.0,
+        wind_process_std=0.0,
         wind_epsilon=0.9,
         wind_volatility=0.25,
+        wind_persistence=0.92,
         seed=2025,
         step_penalty=-1.0,
-        success_reward=3.0,
-        timeout_penalty=-5.0,
+        success_reward=25.0,
+        timeout_penalty=-25.0,
     )
     env = AdvRL2DEnv(env_cfg)
 
@@ -701,13 +861,22 @@ def main():
         seed=2026,
     )
 
+    save_path = default_policy_model_path()
+    warm_start_path = warm_start_policy_model_path()
+
+    print("Starting training of AdvRL_v3 (shared 4D SSM, clean policy observations, fixed std)...")
+    if warm_start_path is not None and os.path.abspath(warm_start_path) != os.path.abspath(save_path):
+        print(f"Warm-starting from checkpoint: {warm_start_path}")
+    elif warm_start_path is not None:
+        print(f"Continuing training from existing shared-SSM checkpoint: {warm_start_path}")
+    else:
+        print("No compatible checkpoint found; training starts from scratch.")
+
     save_dir = os.path.join(_THIS_DIR, "outputs", "saved_models")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "AdvRL_v2_policy.pt")
-
-    print("Starting training of AdvRL_v2 (SSM wind, 2D action, fixed std, sparse reward, no noise)...")
-    model = train(env, ppo_cfg, model_path=save_path)
+    model = train(env, ppo_cfg, model_path=warm_start_path)
     torch.save(model.state_dict(), save_path)
+    print(f"Saved shared-SSM policy checkpoint to: {save_path}")
 
     figures_dir = os.path.join(_THIS_DIR, "outputs", "figures")
     os.makedirs(figures_dir, exist_ok=True)
