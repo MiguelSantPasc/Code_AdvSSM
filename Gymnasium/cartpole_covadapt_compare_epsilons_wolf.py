@@ -124,7 +124,7 @@ except ModuleNotFoundError:
     )
 
 
-DEFAULT_GYMNASIUM_DISCOUNT_DELTA = 0.86
+DEFAULT_GYMNASIUM_DISCOUNT_DELTA = 0.94
 
 
 def normalized_final_reward(series: np.ndarray, *, n_episodes: int) -> float:
@@ -1009,6 +1009,52 @@ def pgd_attack_on_expected_value(
     return best_obs, float(best_obj), best_m_post, best_P_post
 
 
+def make_pgd_boundary_stats() -> dict[str, int | float]:
+    """Create one empty accumulator for PGD boundary-slack diagnostics."""
+    return {
+        "attack_attempts": 0,
+        "fallback_to_real": 0,
+        "pgd_diagnostic_cases": 0,
+        "pgd_gap_sum": 0.0,
+        "pgd_on_boundary": 0,
+    }
+
+
+def merge_pgd_boundary_stats(
+    accumulator: dict[str, int | float],
+    update: dict[str, int | float],
+) -> None:
+    """Add one rollout-level PGD diagnostic block into a running summary."""
+    accumulator["attack_attempts"] = int(accumulator["attack_attempts"]) + int(update["attack_attempts"])
+    accumulator["fallback_to_real"] = int(accumulator["fallback_to_real"]) + int(update["fallback_to_real"])
+    accumulator["pgd_diagnostic_cases"] = int(accumulator["pgd_diagnostic_cases"]) + int(update["pgd_diagnostic_cases"])
+    accumulator["pgd_gap_sum"] = float(accumulator["pgd_gap_sum"]) + float(update["pgd_gap_sum"])
+    accumulator["pgd_on_boundary"] = int(accumulator["pgd_on_boundary"]) + int(update["pgd_on_boundary"])
+
+
+def print_pgd_boundary_diagnostics(
+    *,
+    attack_eps: float,
+    boundary_tol: float,
+    stats_by_label: dict[str, dict[str, int | float]],
+) -> None:
+    """Print the real PGD boundary diagnostics collected during the benchmark."""
+    print(f"[eps={attack_eps:.2f}] pgd_boundary_diagnostics: boundary_tol={boundary_tol:.3f}")
+    print("  label                  cases   mean_gap   pct_boundary   attacked_used_pct")
+    for label, stats in stats_by_label.items():
+        count = max(int(stats["pgd_diagnostic_cases"]), 1)
+        mean_gap = float(stats["pgd_gap_sum"]) / float(count)
+        pct_boundary = 100.0 * float(stats["pgd_on_boundary"]) / float(count)
+        attack_attempts = max(int(stats["attack_attempts"]), 1)
+        attacked_used_pct = 100.0 * (
+            float(stats["attack_attempts"]) - float(stats["fallback_to_real"])
+        ) / float(attack_attempts)
+        print(
+            f"  {label:<20} {count:>5d}   {mean_gap:>8.4f}   "
+            f"{pct_boundary:>11.2f}%   {attacked_used_pct:>16.2f}%"
+        )
+
+
 @torch.no_grad()
 def rollout_episode_return_clean(
     env: gym.Env,
@@ -1096,8 +1142,9 @@ def rollout_episode_return_attacked(
     wolf_kind: str,
     wolf_imq_soft_threshold: float,
     wolf_tmd_threshold: float,
+    pgd_boundary_tol: float,
     device: str = "cpu",
-) -> tuple[float, dict[str, int]]:
+) -> tuple[float, dict[str, int | float]]:
     """
     Roll out one episode with probabilistic attacks and one chosen defense.
 
@@ -1111,10 +1158,7 @@ def rollout_episode_return_attacked(
        - the random baseline samples a random point from the attack ellipsoid.
     """
     obs, _info = env.reset(seed=int(seed))
-    fallback_stats = {
-        "attack_attempts": 0,
-        "fallback_to_real": 0,
-    }
+    fallback_stats = make_pgd_boundary_stats()
 
     rng_attack_gate = np.random.default_rng(int(seed) + 707_001)
     rng_nominal_noise = np.random.default_rng(int(seed) + 707_002)
@@ -1188,22 +1232,19 @@ def rollout_episode_return_attacked(
             else:
                 raise ValueError(f"Unsupported attack_mode: {attack_mode}")
 
-            eps_real = mahalanobis_radius_sq(
-                observation=y_noisy,
-                center=attack_center,
-                covariance=attack_sigma,
-            )
             eps_attack = mahalanobis_radius_sq(
                 observation=y_used,
                 center=attack_center,
                 covariance=attack_sigma,
             )
-            use_real_observation = bool(eps_attack < eps_real)
-            if use_real_observation:
-                fallback_stats["fallback_to_real"] += 1
-                y_used = y_noisy.copy()
-                m_post_attack = None
-                P_post_attack = None
+            if attack_mode == "pgd":
+                gap = max(float(attack_eps) - float(eps_attack), 0.0)
+                fallback_stats["pgd_diagnostic_cases"] = int(fallback_stats["pgd_diagnostic_cases"]) + 1
+                fallback_stats["pgd_gap_sum"] = float(fallback_stats["pgd_gap_sum"]) + float(gap)
+                fallback_stats["pgd_on_boundary"] = int(fallback_stats["pgd_on_boundary"]) + int(
+                    gap <= float(pgd_boundary_tol)
+                )
+            use_real_observation = False
         else:
             use_real_observation = True
 
@@ -1313,12 +1354,15 @@ def compute_accumulated_reward_data_with_wolf(
     pgd_steps: int,
     pgd_step_size: float,
     mc_samples: int,
+    pgd_boundary_tol: float,
     c_scales: tuple[float, ...],
     omega_h: float,
     omega_o: float,
     delta_threshold: float,
-    wolf_imq_soft_threshold: float,
-    wolf_tmd_threshold: float,
+    wolf_imq_soft_threshold_attack: float,
+    wolf_imq_soft_threshold_random: float,
+    wolf_tmd_threshold_attack: float,
+    wolf_tmd_threshold_random: float,
     device: str,
 ) -> dict[str, np.ndarray | float | int]:
     """Compute all accumulated-reward curves for one CartPole attack radius."""
@@ -1326,10 +1370,14 @@ def compute_accumulated_reward_data_with_wolf(
         raise ValueError("omega_h and omega_o must sum to 1.")
     if not (0.0 <= delta_threshold <= 1.0):
         raise ValueError("delta_threshold must lie in [0, 1].")
-    if wolf_imq_soft_threshold <= 0.0:
-        raise ValueError("wolf_imq_soft_threshold must be positive.")
-    if wolf_tmd_threshold <= 0.0:
-        raise ValueError("wolf_tmd_threshold must be positive.")
+    if wolf_imq_soft_threshold_attack <= 0.0:
+        raise ValueError("wolf_imq_soft_threshold_attack must be positive.")
+    if wolf_imq_soft_threshold_random <= 0.0:
+        raise ValueError("wolf_imq_soft_threshold_random must be positive.")
+    if wolf_tmd_threshold_attack <= 0.0:
+        raise ValueError("wolf_tmd_threshold_attack must be positive.")
+    if wolf_tmd_threshold_random <= 0.0:
+        raise ValueError("wolf_tmd_threshold_random must be positive.")
 
     device_t = torch.device(device)
     model = load_cartpole_policy(model_path, device_t)
@@ -1356,9 +1404,16 @@ def compute_accumulated_reward_data_with_wolf(
         totals[f"random_cov_{c_scale:g}"] = 0.0
 
     fallback_by_mode = {
-        "pgd": {"attack_attempts": 0, "fallback_to_real": 0},
-        "random": {"attack_attempts": 0, "fallback_to_real": 0},
+        "pgd": make_pgd_boundary_stats(),
+        "random": make_pgd_boundary_stats(),
     }
+    pgd_boundary_by_label: dict[str, dict[str, int | float]] = {
+        "kf": make_pgd_boundary_stats(),
+        "wolf_imq": make_pgd_boundary_stats(),
+        "wolf_tmd": make_pgd_boundary_stats(),
+    }
+    for c_scale in c_scales:
+        pgd_boundary_by_label[f"covadapt_{c_scale:g}"] = make_pgd_boundary_stats()
 
     series: dict[str, list[float]] = {key: [] for key in totals}
 
@@ -1411,8 +1466,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="imq",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_attack,
+            wolf_tmd_threshold=wolf_tmd_threshold_attack,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
         ret_random, stats_random = rollout_episode_return_attacked(
@@ -1435,8 +1491,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="imq",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_random,
+            wolf_tmd_threshold=wolf_tmd_threshold_random,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
         ret_attack_wolf_imq, stats_attack_wolf_imq = rollout_episode_return_attacked(
@@ -1459,8 +1516,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="imq",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_attack,
+            wolf_tmd_threshold=wolf_tmd_threshold_attack,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
         ret_attack_wolf_tmd, stats_attack_wolf_tmd = rollout_episode_return_attacked(
@@ -1483,8 +1541,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="tmd",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_attack,
+            wolf_tmd_threshold=wolf_tmd_threshold_attack,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
         ret_random_wolf_imq, stats_random_wolf_imq = rollout_episode_return_attacked(
@@ -1507,8 +1566,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="imq",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_random,
+            wolf_tmd_threshold=wolf_tmd_threshold_random,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
         ret_random_wolf_tmd, stats_random_wolf_tmd = rollout_episode_return_attacked(
@@ -1531,8 +1591,9 @@ def compute_accumulated_reward_data_with_wolf(
             omega_o=omega_o,
             delta_threshold=delta_threshold,
             wolf_kind="tmd",
-            wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-            wolf_tmd_threshold=wolf_tmd_threshold,
+            wolf_imq_soft_threshold=wolf_imq_soft_threshold_random,
+            wolf_tmd_threshold=wolf_tmd_threshold_random,
+            pgd_boundary_tol=pgd_boundary_tol,
             device=device,
         )
 
@@ -1545,12 +1606,15 @@ def compute_accumulated_reward_data_with_wolf(
         totals["random_wolf_imq"] += float(ret_random_wolf_imq)
         totals["random_wolf_tmd"] += float(ret_random_wolf_tmd)
 
-        for stats_block in (stats_attack, stats_attack_wolf_imq, stats_attack_wolf_tmd):
-            fallback_by_mode["pgd"]["attack_attempts"] += int(stats_block["attack_attempts"])
-            fallback_by_mode["pgd"]["fallback_to_real"] += int(stats_block["fallback_to_real"])
+        for label, stats_block in (
+            ("kf", stats_attack),
+            ("wolf_imq", stats_attack_wolf_imq),
+            ("wolf_tmd", stats_attack_wolf_tmd),
+        ):
+            merge_pgd_boundary_stats(fallback_by_mode["pgd"], stats_block)
+            merge_pgd_boundary_stats(pgd_boundary_by_label[label], stats_block)
         for stats_block in (stats_random, stats_random_wolf_imq, stats_random_wolf_tmd):
-            fallback_by_mode["random"]["attack_attempts"] += int(stats_block["attack_attempts"])
-            fallback_by_mode["random"]["fallback_to_real"] += int(stats_block["fallback_to_real"])
+            merge_pgd_boundary_stats(fallback_by_mode["random"], stats_block)
 
         series["clean"].append(totals["clean"])
         series["noisy_kf"].append(totals["noisy_kf"])
@@ -1594,8 +1658,9 @@ def compute_accumulated_reward_data_with_wolf(
                 omega_o=omega_o,
                 delta_threshold=delta_threshold,
                 wolf_kind="imq",
-                wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-                wolf_tmd_threshold=wolf_tmd_threshold,
+                wolf_imq_soft_threshold=wolf_imq_soft_threshold_attack,
+                wolf_tmd_threshold=wolf_tmd_threshold_attack,
+                pgd_boundary_tol=pgd_boundary_tol,
                 device=device,
             )
             ret_random_cov, stats_random_cov = rollout_episode_return_attacked(
@@ -1618,8 +1683,9 @@ def compute_accumulated_reward_data_with_wolf(
                 omega_o=omega_o,
                 delta_threshold=delta_threshold,
                 wolf_kind="imq",
-                wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-                wolf_tmd_threshold=wolf_tmd_threshold,
+                wolf_imq_soft_threshold=wolf_imq_soft_threshold_random,
+                wolf_tmd_threshold=wolf_tmd_threshold_random,
+                pgd_boundary_tol=pgd_boundary_tol,
                 device=device,
             )
 
@@ -1629,10 +1695,9 @@ def compute_accumulated_reward_data_with_wolf(
             totals[random_key] += float(ret_random_cov)
             series[attack_key].append(totals[attack_key])
             series[random_key].append(totals[random_key])
-            fallback_by_mode["pgd"]["attack_attempts"] += int(stats_attack_cov["attack_attempts"])
-            fallback_by_mode["pgd"]["fallback_to_real"] += int(stats_attack_cov["fallback_to_real"])
-            fallback_by_mode["random"]["attack_attempts"] += int(stats_random_cov["attack_attempts"])
-            fallback_by_mode["random"]["fallback_to_real"] += int(stats_random_cov["fallback_to_real"])
+            merge_pgd_boundary_stats(fallback_by_mode["pgd"], stats_attack_cov)
+            merge_pgd_boundary_stats(fallback_by_mode["random"], stats_random_cov)
+            merge_pgd_boundary_stats(pgd_boundary_by_label[f"covadapt_{c_scale:g}"], stats_attack_cov)
 
             env_attack_cov.close()
             env_random_cov.close()
@@ -1646,13 +1711,20 @@ def compute_accumulated_reward_data_with_wolf(
         int(fallback_by_mode["random"]["attack_attempts"]), 1
     )
     print(
-        f"[eps={attack_eps:.2f}] replace_by_real_pct: "
-        f"pgd={pgd_replace_pct:.2f}% | boundary={random_replace_pct:.2f}%"
+        f"[eps={attack_eps:.2f}] fallback_to_real_pct "
+        f"(disabled in this scenario): "
+        f"pgd={pgd_replace_pct:.2f}% | random_boundary={random_replace_pct:.2f}%"
+    )
+    print_pgd_boundary_diagnostics(
+        attack_eps=attack_eps,
+        boundary_tol=pgd_boundary_tol,
+        stats_by_label=pgd_boundary_by_label,
     )
 
     data: dict[str, np.ndarray | float | int] = {
         "n_episodes": int(n_episodes),
         "seed0": int(seed0),
+        "scenario_tag": np.asarray("obs010-022-005-022_nofallback"),
         "attack_eps": float(attack_eps),
         "attack_prob": float(attack_prob),
         "pgd_replace_by_real_pct": float(pgd_replace_pct),
@@ -1660,12 +1732,15 @@ def compute_accumulated_reward_data_with_wolf(
         "discount_delta": float(discount_delta),
         "pgd_steps": int(pgd_steps),
         "pgd_step_size": float(pgd_step_size),
+        "pgd_boundary_tol": float(pgd_boundary_tol),
         "mc_samples": int(mc_samples),
         "omega_h": float(omega_h),
         "omega_o": float(omega_o),
         "delta_threshold": float(delta_threshold),
-        "wolf_imq_soft_threshold": float(wolf_imq_soft_threshold),
-        "wolf_tmd_threshold": float(wolf_tmd_threshold),
+        "wolf_imq_soft_threshold_attack": float(wolf_imq_soft_threshold_attack),
+        "wolf_imq_soft_threshold_random": float(wolf_imq_soft_threshold_random),
+        "wolf_tmd_threshold_attack": float(wolf_tmd_threshold_attack),
+        "wolf_tmd_threshold_random": float(wolf_tmd_threshold_random),
         "obs_noise_std": np.asarray(obs_noise_std, dtype=float),
         "kf_meas_std": np.asarray(kf_meas_std, dtype=float),
         "kf_proc_std": np.asarray(kf_proc_std, dtype=float),
@@ -1692,6 +1767,16 @@ def compute_accumulated_reward_data_with_wolf(
     for c_scale in c_scales:
         data[f"acc_attack_cov_{c_scale:g}"] = np.asarray(series[f"attack_cov_{c_scale:g}"], dtype=float)
         data[f"acc_random_cov_{c_scale:g}"] = np.asarray(series[f"random_cov_{c_scale:g}"], dtype=float)
+    for label, stats in pgd_boundary_by_label.items():
+        safe_label = label.replace(".", "p")
+        count = max(int(stats["pgd_diagnostic_cases"]), 1)
+        attack_attempts = max(int(stats["attack_attempts"]), 1)
+        data[f"pgd_boundary_cases_{safe_label}"] = int(stats["pgd_diagnostic_cases"])
+        data[f"pgd_mean_gap_{safe_label}"] = float(stats["pgd_gap_sum"]) / float(count)
+        data[f"pgd_pct_boundary_{safe_label}"] = 100.0 * float(stats["pgd_on_boundary"]) / float(count)
+        data[f"pgd_attacked_used_pct_{safe_label}"] = 100.0 * (
+            float(stats["attack_attempts"]) - float(stats["fallback_to_real"])
+        ) / float(attack_attempts)
     return data
 
 
@@ -2009,7 +2094,7 @@ def plot_accumulated_reward_comparison_two_epsilons_with_wolf(
         spec=attack_spec,
         values_by_epsilon=attack_values,
         legend_width="wide",
-        legend_loc="lower right",
+        legend_loc="lower left",
     )
     draw_grouped_bar_panel(
         ax=ax_random,
@@ -2039,7 +2124,9 @@ def main() -> None:
 
     # Observation noise in raw CartPole state coordinates:
     # [x, xdot, theta, thetadot].
-    obs_noise_std = np.array([0.08, 0.18, 0.04, 0.18], dtype=float)
+    # Use a slightly stronger observation-noise scenario than the reference
+    # benchmark while keeping the same PGD optimizer settings.
+    obs_noise_std = np.array([0.10, 0.22, 0.05, 0.22], dtype=float)
     attack_prob = 0.20
     # 4D chi-square radii corresponding approximately to 75% and 95%
     # predictive-ellipsoid coverage.
@@ -2079,9 +2166,10 @@ def main() -> None:
     pgd_steps = 20
     pgd_step_size = 0.34
     mc_samples = 64
+    pgd_boundary_tol = 0.1
 
     # Episodes used for the benchmark. Increase them for a more stable figure.
-    n_episodes = 10
+    n_episodes = 15
     seed0 = 100
 
     # Covariance-adaptation and WoLF hyperparameters.
@@ -2089,24 +2177,35 @@ def main() -> None:
     omega_h = 0.50
     omega_o = 0.50
     delta_threshold = 0.20
-    wolf_imq_soft_threshold = 0.20
-    wolf_tmd_threshold = 2.8
+    # Use the standalone WoLF sweep choice:
+    # IMQ is best on the 75% branch, while TMD is best on the 95% branch.
+    # We therefore keep both WoLF families in the benchmark and tune their
+    # attack and random-epsilon branches separately.
+    wolf_imq_soft_threshold_attack = 0.60
+    wolf_imq_soft_threshold_random = 0.45
+    wolf_tmd_threshold_attack = 3.0
+    wolf_tmd_threshold_random = 2.6
     force_cache = True
+    scenario_tag = "obs010-022-005-022_nofallback"
 
     ssm = build_cartpole_linear_ssm()
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     c_tag = "-".join(f"{value:g}" for value in c_scales).replace(".", "p")
     eps_tag = "-".join(str(value).replace(".", "p") for value in attack_eps_values)
-    imq_tag = str(wolf_imq_soft_threshold).replace(".", "p")
-    tmd_tag = str(wolf_tmd_threshold).replace(".", "p")
+    imq_attack_tag = str(wolf_imq_soft_threshold_attack).replace(".", "p")
+    imq_random_tag = str(wolf_imq_soft_threshold_random).replace(".", "p")
+    tmd_attack_tag = str(wolf_tmd_threshold_attack).replace(".", "p")
+    tmd_random_tag = str(wolf_tmd_threshold_random).replace(".", "p")
 
     outpath = os.path.join(
         out_dir,
         (
             "comparison_cartpole_two_eps_wolf_"
+            f"{scenario_tag}_delta{str(discount_delta).replace('.', 'p')}_"
             f"N{n_episodes}_p{attack_prob}_eps{eps_tag}_c{c_tag}_"
-            f"imq{imq_tag}_tmd{tmd_tag}.png"
+            f"imqa{imq_attack_tag}_imqr{imq_random_tag}_"
+            f"tmda{tmd_attack_tag}_tmdr{tmd_random_tag}.png"
         ),
     )
 
@@ -2116,8 +2215,10 @@ def main() -> None:
             out_dir,
             (
                 "comparison_cartpole_wolf_"
+                f"{scenario_tag}_delta{str(discount_delta).replace('.', 'p')}_"
                 f"N{n_episodes}_p{attack_prob}_eps{str(attack_eps).replace('.', 'p')}_"
-                f"c{c_tag}_imq{imq_tag}_tmd{tmd_tag}.png"
+                f"c{c_tag}_imqa{imq_attack_tag}_imqr{imq_random_tag}_"
+                f"tmda{tmd_attack_tag}_tmdr{tmd_random_tag}.png"
             ),
         )
         data_path = data_path_for_plot(single_eps_outpath)
@@ -2137,13 +2238,16 @@ def main() -> None:
                 kf_proc_corr=kf_proc_corr,
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
+                pgd_boundary_tol=pgd_boundary_tol,
                 mc_samples=mc_samples,
                 c_scales=c_scales,
                 omega_h=omega_h,
                 omega_o=omega_o,
                 delta_threshold=delta_threshold,
-                wolf_imq_soft_threshold=wolf_imq_soft_threshold,
-                wolf_tmd_threshold=wolf_tmd_threshold,
+                wolf_imq_soft_threshold_attack=wolf_imq_soft_threshold_attack,
+                wolf_imq_soft_threshold_random=wolf_imq_soft_threshold_random,
+                wolf_tmd_threshold_attack=wolf_tmd_threshold_attack,
+                wolf_tmd_threshold_random=wolf_tmd_threshold_random,
                 device=device,
             )
 

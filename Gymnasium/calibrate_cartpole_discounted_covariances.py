@@ -66,6 +66,11 @@ for import_path in (CURRENT_DIR, REPO_ROOT):
 
 import cartpole_covadapt_compare_epsilons_wolf as cartpole_mod
 
+try:
+    from AdvSSM.io_utils import data_dir_for, save_npz
+except ModuleNotFoundError:
+    from io_utils import data_dir_for, save_npz
+
 
 @dataclass(frozen=True)
 class ModeConfig:
@@ -121,24 +126,24 @@ def build_correlated_filter_covariances() -> tuple[np.ndarray, np.ndarray, np.nd
     The fixed-`Q` baseline reuses these same values so the new discount-based
     inspection stays directly comparable to the existing script.
     """
-    kf_meas_std = np.array([0.080, 0.180, 0.040, 0.180], dtype=np.float32)
+    kf_meas_std = np.array([0.100, 0.220, 0.050, 0.220], dtype=np.float32)
     kf_proc_std = np.array([0.320, 0.720, 0.160, 0.720], dtype=np.float32)
 
     kf_meas_corr = np.array(
         [
-            [1.00, 0.22, 0.08, 0.00],
-            [0.22, 1.00, 0.18, 0.28],
-            [0.08, 0.18, 1.00, 0.24],
-            [0.00, 0.28, 0.24, 1.00],
+            [1.00, 0.18, 0.06, 0.00],
+            [0.18, 1.00, 0.14, 0.22],
+            [0.06, 0.14, 1.00, 0.18],
+            [0.00, 0.22, 0.18, 1.00],
         ],
         dtype=np.float32,
     )
     kf_proc_corr = np.array(
         [
-            [1.00, 0.40, 0.16, 0.00],
-            [0.40, 1.00, 0.30, 0.42],
-            [0.16, 0.30, 1.00, 0.34],
-            [0.00, 0.42, 0.34, 1.00],
+            [1.00, 0.24, 0.08, 0.00],
+            [0.24, 1.00, 0.16, 0.26],
+            [0.08, 0.16, 1.00, 0.22],
+            [0.00, 0.26, 0.22, 1.00],
         ],
         dtype=np.float32,
     )
@@ -447,6 +452,62 @@ def best_fixed_discount_mode(
     return best_mode, float(best_gap)
 
 
+def save_calibration_summary(
+    *,
+    outpath: str,
+    scenario_tag: str,
+    mode_list: list[ModeConfig],
+    summaries: dict[str, CalibrationSummary],
+    epsilon_values: tuple[float, ...],
+    fixed_discount_values: tuple[float, ...],
+    seed0: int,
+    n_episodes: int,
+    max_steps_per_episode: int,
+    adaptive_target_radius: float,
+    adaptive_delta_min: float,
+    adaptive_delta_max: float,
+    target_dimension: float,
+    best_mode: ModeConfig,
+    best_gap: float,
+) -> None:
+    """Save the discounted-covariance calibration summary as one NPZ file."""
+    payload: dict[str, object] = {
+        "scenario_tag": np.asarray(scenario_tag),
+        "epsilon_values": np.asarray(epsilon_values, dtype=float),
+        "fixed_discount_values": np.asarray(fixed_discount_values, dtype=float),
+        "seed0": int(seed0),
+        "n_episodes": int(n_episodes),
+        "max_steps_per_episode": int(max_steps_per_episode),
+        "adaptive_target_radius": float(adaptive_target_radius),
+        "adaptive_delta_min": float(adaptive_delta_min),
+        "adaptive_delta_max": float(adaptive_delta_max),
+        "target_dimension": float(target_dimension),
+        "best_fixed_delta": float(best_mode.delta if best_mode.delta is not None else np.nan),
+        "best_fixed_abs_gap": float(best_gap),
+    }
+
+    for mode in mode_list:
+        summary = summaries[mode.name]
+        safe_name = mode.name.replace(".", "p")
+        eps_values = np.asarray(summary.eps_real_values, dtype=float)
+        delta_values = np.asarray(summary.delta_values, dtype=float)
+        trace_q_values = np.asarray(summary.trace_q_values, dtype=float)
+        trace_p_values = np.asarray(summary.trace_p_values, dtype=float)
+        payload[f"count_{safe_name}"] = int(summary.count)
+        payload[f"mean_nis_{safe_name}"] = float(eps_values.mean()) if eps_values.size else 0.0
+        payload[f"median_nis_{safe_name}"] = float(np.median(eps_values)) if eps_values.size else 0.0
+        payload[f"mean_delta_{safe_name}"] = float(delta_values.mean()) if delta_values.size else 0.0
+        payload[f"mean_trQ_{safe_name}"] = float(trace_q_values.mean()) if trace_q_values.size else 0.0
+        payload[f"mean_trP_{safe_name}"] = float(trace_p_values.mean()) if trace_p_values.size else 0.0
+        for epsilon in epsilon_values:
+            payload[f"inside_pct_eps{str(float(epsilon)).replace('.', 'p')}_{safe_name}"] = 100.0 * float(
+                summary.inside_counts[float(epsilon)]
+            ) / max(int(summary.count), 1)
+
+    save_npz(outpath, **payload)
+    print(f"Saved calibration summary to: {outpath}")
+
+
 def inspect_discounted_covariances(
     *,
     seed0: int,
@@ -457,6 +518,8 @@ def inspect_discounted_covariances(
     adaptive_target_radius: float,
     adaptive_delta_min: float,
     adaptive_delta_max: float,
+    scenario_tag: str,
+    outpath: str,
 ) -> None:
     """
     Compare fixed-`Q`, fixed-discount, and adaptive-discount calibration.
@@ -590,6 +653,23 @@ def inspect_discounted_covariances(
         epsilon_values=epsilon_values,
         target_dimension=target_dimension,
     )
+    save_calibration_summary(
+        outpath=outpath,
+        scenario_tag=scenario_tag,
+        mode_list=mode_list,
+        summaries=summaries,
+        epsilon_values=epsilon_values,
+        fixed_discount_values=fixed_discount_values,
+        seed0=seed0,
+        n_episodes=n_episodes,
+        max_steps_per_episode=max_steps_per_episode,
+        adaptive_target_radius=adaptive_target_radius,
+        adaptive_delta_min=adaptive_delta_min,
+        adaptive_delta_max=adaptive_delta_max,
+        target_dimension=target_dimension,
+        best_mode=best_mode,
+        best_gap=best_gap,
+    )
 
 
 def main() -> None:
@@ -597,15 +677,24 @@ def main() -> None:
     Entry point for the discount-based CartPole covariance inspection.
     """
     seed0 = 7
-    n_episodes = 4
-    max_steps_per_episode = 18
+    n_episodes = 6
+    max_steps_per_episode = 24
     # 4D chi-square radii corresponding approximately to 75% and 95%
     # predictive-ellipsoid coverage.
     epsilon_values = (5.39, 9.49)
-    fixed_discount_values = (0.86, 0.87, 0.88, 0.89, 0.90, 0.91, 0.92)
+    fixed_discount_values = tuple(float(value) for value in np.arange(0.80, 0.95, 0.01))
     adaptive_target_radius = 4.0
     adaptive_delta_min = 0.70
     adaptive_delta_max = 1.00
+    scenario_tag = "obs010-022-005-022_nofallback"
+    out_dir = data_dir_for(CURRENT_DIR)
+    outpath = os.path.join(
+        out_dir,
+        (
+            "calibrate_cartpole_discounted_covariances_"
+            f"{scenario_tag}_N{n_episodes}_S{max_steps_per_episode}.npz"
+        ),
+    )
 
     inspect_discounted_covariances(
         seed0=seed0,
@@ -616,6 +705,8 @@ def main() -> None:
         adaptive_target_radius=adaptive_target_radius,
         adaptive_delta_min=adaptive_delta_min,
         adaptive_delta_max=adaptive_delta_max,
+        scenario_tag=scenario_tag,
+        outpath=outpath,
     )
 
 

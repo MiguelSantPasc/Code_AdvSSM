@@ -2,14 +2,14 @@
 """
 RL_covadapt_compare_epsilons.py
 
-Compare two attack-radius settings for the RL covariance-adaptation experiment
+Compare two attack-probability settings for the RL covariance-adaptation experiment
 inside one figure.
 
 What this script does:
 1. Reuse the same 4D RL attack / defense pipeline already implemented in
    `CovarianceAdaptation/RL_covadapt.py`.
-2. Evaluate the same bar-style summaries for two different attack ellipsoid
-   radii, by default `epsilon = 0.75` and `epsilon = 0.95`.
+2. Evaluate the same bar-style summaries for two different attack
+   probabilities, by default `epsilon = 0.75` and `epsilon = 0.95`.
 3. Plot the same three panels as the single-epsilon script:
    - baseline methods,
    - attacked-case methods,
@@ -49,6 +49,7 @@ try:
     from CovarianceAdaptation.RL_covadapt import (
         RL_4D_DIR,
         compute_accumulated_reward_data,
+        rl_mod,
         set_plot_theme,
         style_axis,
     )
@@ -57,6 +58,7 @@ except ModuleNotFoundError:
     from RL_covadapt import (
         RL_4D_DIR,
         compute_accumulated_reward_data,
+        rl_mod,
         set_plot_theme,
         style_axis,
     )
@@ -146,7 +148,7 @@ def build_panel_specifications(
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
         ("Attack + KF", "acc_attack_kf"),
-        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
+        ("Random boundary attack + KF", "acc_random_kf"),
     ]
 
     attack_spec = [
@@ -172,7 +174,7 @@ def build_panel_specifications(
     random_spec.extend(
         [
             (
-                rf"Boundary $\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
+                rf"Random boundary attack + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
                 f"acc_random_cov_{c_scale:g}",
             )
             for c_scale in c_scales
@@ -468,11 +470,11 @@ def main() -> None:
     or a larger experiment. As in the rest of this folder, the configuration
     is kept in plain Python variables instead of environment variables.
     """
-    model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+    model_path = rl_mod.default_policy_model_path()
     device = "cpu"
     noise_std = 0.6
-    attack_prob = 0.15
-    attack_eps_values = (0.75, 0.95)
+    attack_region_radius = 2.488
+    attack_prob_values = (0.75, 0.95)
     kf_meas_std = noise_std
     kf_proc_std = 0.03
     pgd_steps = 120
@@ -494,28 +496,29 @@ def main() -> None:
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     c_tag = "-".join(f"{value:g}" for value in c_scales).replace(".", "p")
-    eps_tag = "-".join(str(value).replace(".", "p") for value in attack_eps_values)
+    eps_tag = "-".join(str(value).replace(".", "p") for value in attack_prob_values)
+    radius_tag = str(attack_region_radius).replace(".", "p")
     outpath = os.path.join(
         out_dir,
         (
             "comparison_RL_v2_wind_4dattack_two_eps_"
-            f"N{n_episodes}_p{attack_prob}_eps{eps_tag}_c{c_tag}.png"
+            f"N{n_episodes}_eps{eps_tag}_rad{radius_tag}_c{c_tag}.png"
         ),
     )
 
     data_by_epsilon: dict[float, dict[str, np.ndarray | float | int]] = {}
     data_dir = os.path.dirname(data_path_for_plot(outpath))
-    for attack_eps in attack_eps_values:
+    for attack_prob in attack_prob_values:
         existing_cache_path = find_existing_single_epsilon_cache(
             data_dir=data_dir,
-            attack_prob=attack_prob,
-            attack_eps=float(attack_eps),
+            attack_prob=float(attack_prob),
+            attack_eps=float(attack_region_radius),
             c_tag=c_tag,
             preferred_n_episodes=n_episodes,
         )
         if existing_cache_path is not None and not force_cache:
             print(f"[cache] loading compatible data: {existing_cache_path}")
-            data_by_epsilon[float(attack_eps)] = load_npz(existing_cache_path)
+            data_by_epsilon[float(attack_prob)] = load_npz(existing_cache_path)
             continue
 
         # Fall back to the exact single-epsilon cache name when no compatible
@@ -524,19 +527,19 @@ def main() -> None:
             out_dir,
             (
                 "comparison_RL_v2_wind_4dattack_"
-                f"N{n_episodes}_p{attack_prob}_eps{str(attack_eps).replace('.', 'p')}_c{c_tag}.png"
+                f"N{n_episodes}_eps{str(attack_prob).replace('.', 'p')}_rad{radius_tag}_c{c_tag}.png"
             ),
         )
         data_path = data_path_for_plot(single_eps_outpath)
 
-        def compute_data_for_epsilon(attack_eps_value: float = float(attack_eps)) -> dict[str, np.ndarray | float | int]:
+        def compute_data_for_epsilon(attack_prob_value: float = float(attack_prob)) -> dict[str, np.ndarray | float | int]:
             return compute_accumulated_reward_data(
                 n_episodes=n_episodes,
                 seed0=seed0,
                 model_path=model_path,
                 noise_std=noise_std,
-                attack_eps=attack_eps_value,
-                attack_prob=attack_prob,
+                attack_eps=attack_region_radius,
+                attack_prob=attack_prob_value,
                 kf_meas_std=kf_meas_std,
                 kf_proc_std=kf_proc_std,
                 pgd_steps=pgd_steps,
@@ -549,7 +552,7 @@ def main() -> None:
                 device=device,
             )
 
-        data_by_epsilon[float(attack_eps)] = cached_npz(
+        data_by_epsilon[float(attack_prob)] = cached_npz(
             data_path,
             compute_data_for_epsilon,
             force=force_cache,
@@ -557,7 +560,7 @@ def main() -> None:
 
     plot_accumulated_reward_comparison_two_epsilons(
         data_by_epsilon=data_by_epsilon,
-        epsilon_values=tuple(float(value) for value in attack_eps_values),
+        epsilon_values=tuple(float(value) for value in attack_prob_values),
         outpath=outpath,
     )
     print(f"Saved figure to: {outpath}")

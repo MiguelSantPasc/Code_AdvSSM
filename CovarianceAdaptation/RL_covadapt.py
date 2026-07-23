@@ -93,6 +93,180 @@ def lambda_max_from_covariance(cov: np.ndarray) -> float:
     return float(max(np.max(eigvals), 1e-12))
 
 
+def build_correlated_state_covariance(
+    *,
+    position_std: float,
+    wind_std: float,
+    position_corr: float,
+    wind_corr: float,
+    cross_corr: float,
+) -> np.ndarray:
+    """Build a PSD 4D covariance with correlated position and wind blocks."""
+    position_std = float(max(position_std, 0.0))
+    wind_std = float(max(wind_std, 0.0))
+    position_corr = float(np.clip(position_corr, -0.95, 0.95))
+    wind_corr = float(np.clip(wind_corr, -0.95, 0.95))
+    cross_corr = float(np.clip(cross_corr, -0.95, 0.95))
+
+    pos_block = np.array(
+        [
+            [position_std**2, position_corr * position_std**2],
+            [position_corr * position_std**2, position_std**2],
+        ],
+        dtype=np.float32,
+    )
+    wind_block = np.array(
+        [
+            [wind_std**2, wind_corr * wind_std**2],
+            [wind_corr * wind_std**2, wind_std**2],
+        ],
+        dtype=np.float32,
+    )
+    cross_block = np.full(
+        (2, 2),
+        cross_corr * position_std * wind_std,
+        dtype=np.float32,
+    )
+    return attack_mod.project_to_psd(
+        np.block(
+            [
+                [pos_block, cross_block],
+                [cross_block.T, wind_block],
+            ]
+        )
+    )
+
+
+def policy_observation_linear_map(goal_r_max: float) -> np.ndarray:
+    """Return the linear part of the map from physical state to policy input."""
+    inv_goal = 1.0 / float(goal_r_max)
+    return np.array(
+        [
+            [-inv_goal, 0.0, 0.0, 0.0],
+            [0.0, -inv_goal, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+
+def state_to_policy_observation(
+    state_value: np.ndarray,
+    *,
+    goal: np.ndarray,
+    goal_r_max: float,
+) -> np.ndarray:
+    """Map the 4D physical state or measurement into the 4D policy observation."""
+    return attack_mod.measurement_state_to_policy_obs(
+        meas_state=np.asarray(state_value, dtype=np.float32),
+        goal=np.asarray(goal, dtype=np.float32),
+        goal_r_max=goal_r_max,
+    )
+
+
+def policy_observation_to_state(
+    obs_value: np.ndarray,
+    *,
+    goal: np.ndarray,
+    goal_r_max: float,
+) -> np.ndarray:
+    """Invert the policy observation back into the 4D measured state."""
+    return attack_mod.policy_obs_to_measurement_state(
+        obs=np.asarray(obs_value, dtype=np.float32),
+        goal=np.asarray(goal, dtype=np.float32),
+        goal_r_max=goal_r_max,
+    )
+
+
+def policy_covariance_from_state_covariance(
+    cov_state: np.ndarray,
+    *,
+    goal_r_max: float,
+) -> np.ndarray:
+    """Map a 4D covariance from physical-state coordinates into policy coordinates."""
+    T = policy_observation_linear_map(goal_r_max)
+    cov_state = attack_mod.project_to_psd(np.asarray(cov_state, dtype=np.float32))
+    return attack_mod.project_to_psd(T @ cov_state @ T.T)
+
+
+def build_shared_filter_covariances(
+    env,
+    *,
+    obs_std_override: float | None = None,
+    proc_std_override: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build the 4D `R` and `Q` matrices used by the shared physical-state filter.
+
+    When the optional overrides are omitted, the filter reuses the exact
+    environment covariances. The scalar overrides keep the benchmark easy to
+    tweak while preserving the same correlation structure in every block.
+    """
+    if obs_std_override is None:
+        R_state = env.observation_covariance()
+    else:
+        R_state = build_correlated_state_covariance(
+            position_std=float(obs_std_override),
+            wind_std=float(obs_std_override),
+            position_corr=env.cfg.obs_position_corr,
+            wind_corr=env.cfg.obs_wind_corr,
+            cross_corr=env.cfg.obs_cross_corr,
+        )
+
+    if proc_std_override is None:
+        Q_state = env.process_covariance()
+    else:
+        Q_state = build_correlated_state_covariance(
+            position_std=float(proc_std_override),
+            wind_std=float(proc_std_override),
+            position_corr=env.cfg.position_process_corr,
+            wind_corr=env.cfg.wind_process_corr,
+            cross_corr=0.0,
+        )
+
+    return (
+        attack_mod.project_to_psd(np.asarray(R_state, dtype=np.float32)),
+        attack_mod.project_to_psd(np.asarray(Q_state, dtype=np.float32)),
+    )
+
+
+def kf_update_shared_state(
+    *,
+    m_pred: np.ndarray,
+    P_pred: np.ndarray,
+    y_obs: np.ndarray,
+    R: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run one nominal 4D KF update in shared physical-state coordinates."""
+    return attack_mod.kf_update_state(
+        m_pred=m_pred,
+        P_pred=P_pred,
+        y_obs=y_obs,
+        R=R,
+    )
+
+
+def predict_shared_state(
+    *,
+    m_post: np.ndarray,
+    P_post: np.ndarray,
+    A_t: np.ndarray,
+    B: np.ndarray,
+    action: np.ndarray,
+    Q: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run one nominal 4D KF prediction in shared physical-state coordinates."""
+    return attack_mod.kf_predict_state(
+        m_post=m_post,
+        P_post=P_post,
+        A_t=A_t,
+        B=B,
+        action=action,
+        Q=Q,
+    )
+
+
 def build_policy_obs_filter_covariances(
     *,
     goal_r_max: float,
@@ -346,6 +520,72 @@ def covariance_adapted_kf_update_policy_observation(
     return m_post.astype(np.float32), P_post.astype(np.float32), diagnostics
 
 
+def rollout_episode_return_noisy_kf_shared_state(
+    env,
+    model,
+    *,
+    device: str = "cpu",
+) -> float:
+    """Roll out one episode with the nominal 4D KF matched to the environment SSM."""
+    dev = torch.device(device)
+    obs = env.reset()
+
+    goal = env.goal.copy()
+    goal_r_max = float(env.cfg.goal_r_max)
+    R_state, _Q_state = build_shared_filter_covariances(env)
+
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
+    )
+
+    ep_return = 0.0
+
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
+
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
+        y_obs = policy_observation_to_state(
+            obs_next,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
+        m_post, P_post, _ = kf_update_shared_state(
+            m_pred=m_pred,
+            P_pred=P_pred,
+            y_obs=y_obs,
+            R=R_state,
+        )
+
+    return float(ep_return)
+
+
 def rollout_episode_return_attack_kf_policyobs(
     env,
     model,
@@ -361,81 +601,75 @@ def rollout_episode_return_attack_kf_policyobs(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under PGD attacks with a nominal 4D policy-observation KF.
-
-    Unlike the older fixed-diagonal attack geometry, the attack ellipsoid is
-    now centered at the predictive mean `m_pred` and shaped by the predictive
-    observation covariance `S_t = P_pred + R`, matching the AdvSSM geometry.
+    Roll out one episode under PGD attacks with the shared 4D physical-state KF.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
     step_idx = 0
-    obs_filt = m_post.copy()
 
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
 
-    step_idx = 1
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
 
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
         do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
         if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
-            m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
-                m_policy=m_pred,
-                P_policy=P_pred,
+            attack_center = state_to_policy_observation(
+                m_pred,
                 goal=goal,
                 goal_r_max=goal_r_max,
             )
-            obs_star, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value(
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
+            obs_attack, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value_state4d(
                 model=model,
-                obs_nom=obs_clean,
-                m_pred=m_pred_pos,
-                P_pred=P_pred_pos,
-                R=R_position,
+                obs_nom=obs_nom,
+                m_pred=m_pred,
+                P_pred=P_pred,
+                R=R_state,
                 goal=goal,
                 goal_r_max=goal_r_max,
                 attack_sigma=attack_sigma,
@@ -444,44 +678,28 @@ def rollout_episode_return_attack_kf_policyobs(
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
                 mc_samples=mc_samples,
-                rng_seed=int(seed_for_attack + 10_000 * step_idx),
+                rng_seed=int(seed_for_attack + 10_000 * (step_idx + 1)),
                 device=device,
             )
-            obs_attack = np.asarray(obs_star, dtype=np.float32)
-            m_post, P_post, _ = kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
+            y_used = policy_observation_to_state(
+                obs_attack,
+                goal=goal,
+                goal_r_max=goal_r_max,
             )
         else:
-            m_post, P_post, _ = kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
             )
 
-        obs_filt = m_post.copy()
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
+        m_post, P_post, _ = kf_update_shared_state(
+            m_pred=m_pred,
+            P_pred=P_pred,
+            y_obs=y_used,
+            R=R_state,
         )
-
-        obs, reward, done, _info = env.step(action)
-        ep_return += float(reward)
         step_idx += 1
-
-        if done:
-            break
 
     return float(ep_return)
 
@@ -498,106 +716,92 @@ def rollout_episode_return_random_attack_kf_policyobs(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under random-boundary attacks with a nominal 4D KF.
-
-    The random ellipsoid uses the predictive observation geometry
-    `N(m_pred, P_pred + R)` at each attacked step.
+    Roll out one episode under random-boundary attacks with the shared 4D KF.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, _R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
     rng_attack_sample = np.random.default_rng(int(seed_for_attack) + 999999)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
-    obs_filt = m_post.copy()
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
 
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
 
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
         do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
         if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
+            attack_center = state_to_policy_observation(
+                m_pred,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
             obs_random = attack_mod.sample_uniform_from_attack_region(
                 center=attack_center,
                 Sigma=attack_sigma,
                 epsilon=attack_eps,
                 rng=rng_attack_sample,
             )
-            obs_attack = np.asarray(obs_random, dtype=np.float32)
-            m_post, P_post, _ = kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
+            y_used = policy_observation_to_state(
+                np.asarray(obs_random, dtype=np.float32),
+                goal=goal,
+                goal_r_max=goal_r_max,
             )
         else:
-            m_post, P_post, _ = kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
             )
 
-        obs_filt = m_post.copy()
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
+        m_post, P_post, _ = kf_update_shared_state(
+            m_pred=m_pred,
+            P_pred=P_pred,
+            y_obs=y_used,
+            R=R_state,
         )
-
-        obs, reward, done, _info = env.step(action)
-        ep_return += float(reward)
-
-        if done:
-            break
 
     return float(ep_return)
 
@@ -622,82 +826,74 @@ def rollout_episode_return_attack_kf_covadapt(
 ) -> float:
     """
     Roll out one episode under PGD attacks with covariance adaptation.
-
-    The first observation is kept nominal exactly as in the original attack
-    script so the comparison remains paired step by step. The defended filter
-    now tracks the full 4D policy observation `[delta_x, delta_y, wind_x,
-    wind_y]` instead of filtering only position.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
     step_idx = 0
 
-    obs_filt = m_post.copy()
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
 
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
 
-    step_idx = 1
-
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
         do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
         if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
-            m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
-                m_policy=m_pred,
-                P_policy=P_pred,
+            attack_center = state_to_policy_observation(
+                m_pred,
                 goal=goal,
                 goal_r_max=goal_r_max,
             )
-            obs_star, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value(
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
+            obs_attack, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value_state4d(
                 model=model,
-                obs_nom=obs_clean,
-                m_pred=m_pred_pos,
-                P_pred=P_pred_pos,
-                R=R_position,
+                obs_nom=obs_nom,
+                m_pred=m_pred,
+                P_pred=P_pred,
+                R=R_state,
                 goal=goal,
                 goal_r_max=goal_r_max,
                 attack_sigma=attack_sigma,
@@ -706,49 +902,39 @@ def rollout_episode_return_attack_kf_covadapt(
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
                 mc_samples=mc_samples,
-                rng_seed=int(seed_for_attack + 10_000 * step_idx),
+                rng_seed=int(seed_for_attack + 10_000 * (step_idx + 1)),
                 device=device,
             )
-            obs_attack = np.asarray(obs_star, dtype=np.float32)
+            y_used = policy_observation_to_state(
+                obs_attack,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
             m_post, P_post, _diag = covariance_adapted_kf_update_policy_observation(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
-                adv_target=obs_attack,
+                y_obs=y_used,
+                R=R_state,
+                adv_target=y_used,
                 c_scale=c_scale,
                 omega_h=omega_h,
                 omega_o=omega_o,
                 delta_threshold=delta_threshold,
             )
         else:
-            m_post, P_post, _ = kf_update_policy_observation(
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            m_post, P_post, _ = kf_update_shared_state(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
+                y_obs=y_used,
+                R=R_state,
             )
 
-        obs_filt = m_post.copy()
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
-        )
-
-        obs, reward, done, _info = env.step(action)
-        ep_return += float(reward)
         step_idx += 1
-
-        if done:
-            break
 
     return float(ep_return)
 
@@ -769,113 +955,102 @@ def rollout_episode_return_random_attack_kf_covadapt(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under random-boundary ellipsoid attacks with covariance adaptation.
-
-    The defended filter operates on the full 4D policy observation so the
-    random attacked wind coordinates are defended together with the attacked
-    relative-position coordinates.
+    Roll out one episode under random-boundary attacks with covariance adaptation.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, _R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
     rng_attack_sample = np.random.default_rng(int(seed_for_attack) + 999999)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
-    obs_filt = m_post.copy()
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
 
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
 
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
-
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
         do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
         if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
-            obs_random = attack_mod.sample_uniform_from_attack_region(
+            attack_center = state_to_policy_observation(
+                m_pred,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
+            obs_attack = attack_mod.sample_uniform_from_attack_region(
                 center=attack_center,
                 Sigma=attack_sigma,
                 epsilon=attack_eps,
                 rng=rng_attack_sample,
             )
-            obs_attack = np.asarray(obs_random, dtype=np.float32)
+            y_used = policy_observation_to_state(
+                np.asarray(obs_attack, dtype=np.float32),
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
             m_post, P_post, _diag = covariance_adapted_kf_update_policy_observation(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
-                adv_target=obs_attack,
+                y_obs=y_used,
+                R=R_state,
+                adv_target=y_used,
                 c_scale=c_scale,
                 omega_h=omega_h,
                 omega_o=omega_o,
                 delta_threshold=delta_threshold,
             )
         else:
-            m_post, P_post, _ = kf_update_policy_observation(
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            m_post, P_post, _ = kf_update_shared_state(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
+                y_obs=y_used,
+                R=R_state,
             )
-
-        obs_filt = m_post.copy()
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
-        )
-
-        obs, reward, done, _info = env.step(action)
-        ep_return += float(reward)
-
-        if done:
-            break
 
     return float(ep_return)
 
@@ -894,12 +1069,20 @@ def load_policy(device: torch.device, model_path: str) -> torch.nn.Module:
 
 
 def build_base_cfg() -> rl_mod.AdvRLEnvConfig:
-    """Return the exact environment configuration used in the random-ellipse script."""
+    """
+    Return the shared environment configuration used by the RL benchmarks.
+
+    The covariance structure is intentionally not overridden here: every
+    RL covariance-adaptation script should inherit the same `Q` and `R`
+    defaults directly from `rl_mod.AdvRLEnvConfig`, so there is a single
+    source of truth for the physical SSM.
+    """
     return rl_mod.AdvRLEnvConfig(
         obs_noise_std=0.0,
-        proc_noise_std=0.0,
+        proc_noise_std=0.03,
         wind_epsilon=0.9,
         wind_volatility=0.25,
+        wind_persistence=0.92,
         seed=2025,
         step_penalty=-1.0,
         success_reward=25.0,
@@ -965,24 +1148,26 @@ def compute_accumulated_reward_data(
 
         cfg_clean.seed = seed
         cfg_clean.obs_noise_std = 0.0
+        cfg_clean.proc_noise_std = float(kf_proc_std)
         cfg_noisy.seed = seed
         cfg_noisy.obs_noise_std = float(noise_std)
+        cfg_noisy.proc_noise_std = float(kf_proc_std)
         cfg_attack.seed = seed
-        cfg_attack.obs_noise_std = 0.0
+        cfg_attack.obs_noise_std = float(kf_meas_std)
+        cfg_attack.proc_noise_std = float(kf_proc_std)
         cfg_random.seed = seed
-        cfg_random.obs_noise_std = 0.0
+        cfg_random.obs_noise_std = float(kf_meas_std)
+        cfg_random.proc_noise_std = float(kf_proc_std)
 
         env_clean = rl_mod.AdvRL2DEnv(cfg_clean)
         env_noisy = env_noisy_class(cfg_noisy)
-        env_attack = rl_mod.AdvRL2DEnv(cfg_attack)
-        env_random = rl_mod.AdvRL2DEnv(cfg_random)
+        env_attack = env_noisy_class(cfg_attack)
+        env_random = env_noisy_class(cfg_random)
 
         ret_clean = attack_mod.rollout_episode_return_clean(env_clean, model, device=device)
-        ret_noisy = attack_mod.rollout_episode_return_noisy_kf(
+        ret_noisy = rollout_episode_return_noisy_kf_shared_state(
             env_noisy,
             model,
-            kf_meas_std=kf_meas_std,
-            kf_proc_std=kf_proc_std,
             device=device,
         )
         ret_attack = rollout_episode_return_attack_kf_policyobs(
@@ -1023,12 +1208,14 @@ def compute_accumulated_reward_data(
             cfg_attack_cov = rl_mod.AdvRLEnvConfig(**{**asdict(base_cfg)})
             cfg_random_cov = rl_mod.AdvRLEnvConfig(**{**asdict(base_cfg)})
             cfg_attack_cov.seed = seed
-            cfg_attack_cov.obs_noise_std = 0.0
+            cfg_attack_cov.obs_noise_std = float(kf_meas_std)
+            cfg_attack_cov.proc_noise_std = float(kf_proc_std)
             cfg_random_cov.seed = seed
-            cfg_random_cov.obs_noise_std = 0.0
+            cfg_random_cov.obs_noise_std = float(kf_meas_std)
+            cfg_random_cov.proc_noise_std = float(kf_proc_std)
 
-            env_attack_cov = rl_mod.AdvRL2DEnv(cfg_attack_cov)
-            env_random_cov = rl_mod.AdvRL2DEnv(cfg_random_cov)
+            env_attack_cov = env_noisy_class(cfg_attack_cov)
+            env_random_cov = env_noisy_class(cfg_random_cov)
 
             ret_attack_cov = rollout_episode_return_attack_kf_covadapt(
                 env_attack_cov,
@@ -1369,11 +1556,11 @@ def main() -> None:
     or a fuller experiment. This keeps the script easy to tweak without relying
     on environment variables.
     """
-    model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+    model_path = rl_mod.default_policy_model_path()
     device = "cpu"
     noise_std = 0.6
-    attack_prob = 0.15
-    attack_eps = 0.75
+    attack_probability_epsilon = 0.75
+    attack_region_radius = 2.488
     kf_meas_std = noise_std
     kf_proc_std = 0.03
     pgd_steps = 120
@@ -1397,7 +1584,8 @@ def main() -> None:
         out_dir,
         (
             "comparison_RL_v2_wind_4dattack_"
-            f"N{n_episodes}_p{attack_prob}_eps{str(attack_eps).replace('.', 'p')}_c{c_tag}.png"
+            f"N{n_episodes}_eps{str(attack_probability_epsilon).replace('.', 'p')}_"
+            f"rad{str(attack_region_radius).replace('.', 'p')}_c{c_tag}.png"
         ),
     )
     data_path = data_path_for_plot(outpath)
@@ -1408,8 +1596,8 @@ def main() -> None:
             seed0=seed0,
             model_path=model_path,
             noise_std=noise_std,
-            attack_eps=attack_eps,
-            attack_prob=attack_prob,
+            attack_eps=attack_region_radius,
+            attack_prob=attack_probability_epsilon,
             kf_meas_std=kf_meas_std,
             kf_proc_std=kf_proc_std,
             pgd_steps=pgd_steps,

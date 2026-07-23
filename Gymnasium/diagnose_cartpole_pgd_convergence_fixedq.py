@@ -555,13 +555,15 @@ def inspect_pgd_convergence_geometries() -> None:
     seed0 = 7
     n_episodes = 2
     max_steps_per_episode = 6
-    # 4D chi-square radii corresponding approximately to 75% and 95%
-    # predictive-ellipsoid coverage.
-    epsilon_values = (5.39, 9.49)
-    epsilon_display_values = (0.75, 0.95)
+    # Focus the diagnosis on the 95% predictive ellipsoid only so we can check
+    # whether PGD converges cleanly on the harder CartPole attack radius.
+    epsilon_values = (9.49,)
+    epsilon_display_values = (0.95,)
     pgd_steps_values = (10, 20, 40, 80)
     pgd_step_sizes = (0.05, 0.10, 0.20, 0.35)
     mc_samples = 48
+    # Treat best iterates within 0.1 ellipsoidal-radius units of the boundary
+    # as converged for this diagnostic pass.
     boundary_tol = 0.1
 
     print(f"seed0 = {seed0}")

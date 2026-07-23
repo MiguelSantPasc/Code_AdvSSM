@@ -2,13 +2,13 @@
 """
 RL_covadapt_compare_epsilons_wolf.py
 
-Compare two attack-radius settings for the 4D RL covariance-adaptation
+Compare two attack-probability settings for the 4D RL covariance-adaptation
 experiment while also including the WoLF robust-filter baselines.
 
 What this script does:
 1. Reuse the exact environment, policy checkpoint, attack geometry, and KF
    baseline already used by `CovarianceAdaptation/RL_covadapt.py`.
-2. Compare two attack ellipsoid radii, by default `epsilon = 0.75` and
+2. Compare two attack probabilities, by default `epsilon = 0.75` and
    `epsilon = 0.95`, in a single figure.
 3. Keep the same three-panel structure as
    `CovarianceAdaptation/RL_covadapt_compare_epsilons.py`:
@@ -66,16 +66,19 @@ try:
         RL_4D_DIR,
         attack_mod,
         build_base_cfg,
-        build_policy_obs_filter_covariances,
-        kf_update_policy_observation,
+        build_shared_filter_covariances,
+        kf_update_shared_state,
         load_policy,
-        policy_obs_state_to_position_belief,
-        predict_policy_observation,
+        policy_covariance_from_state_covariance,
+        policy_observation_to_state,
+        predict_shared_state,
         rl_mod,
         rollout_episode_return_attack_kf_policyobs,
         rollout_episode_return_attack_kf_covadapt,
+        rollout_episode_return_noisy_kf_shared_state,
         rollout_episode_return_random_attack_kf_policyobs,
         rollout_episode_return_random_attack_kf_covadapt,
+        state_to_policy_observation,
         set_plot_theme,
         style_axis,
     )
@@ -86,16 +89,19 @@ except ModuleNotFoundError:
         RL_4D_DIR,
         attack_mod,
         build_base_cfg,
-        build_policy_obs_filter_covariances,
-        kf_update_policy_observation,
+        build_shared_filter_covariances,
+        kf_update_shared_state,
         load_policy,
-        policy_obs_state_to_position_belief,
-        predict_policy_observation,
+        policy_covariance_from_state_covariance,
+        policy_observation_to_state,
+        predict_shared_state,
         rl_mod,
         rollout_episode_return_attack_kf_policyobs,
         rollout_episode_return_attack_kf_covadapt,
+        rollout_episode_return_noisy_kf_shared_state,
         rollout_episode_return_random_attack_kf_policyobs,
         rollout_episode_return_random_attack_kf_covadapt,
+        state_to_policy_observation,
         set_plot_theme,
         style_axis,
     )
@@ -180,12 +186,12 @@ def wolf_kf_update_policy_observation(
     tmd_threshold: float,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
     """
-    Run one 4D policy-observation KF update with a WoLF weighting rule.
+    Run one 4D KF update with a WoLF weighting rule in physical-state coordinates.
 
-    The latent defended state is the policy observation itself, so the
-    measurement model is the identity. The WoLF step is implemented by scaling
-    the effective observation covariance with the inverse weight, exactly as in
-    the reference implementations for linear SSMs.
+    The benchmark now filters the shared physical state
+        s_t = [p_x,t, p_y,t, d_x,t, d_y,t]^T,
+    and the measurement model remains the identity. The WoLF step therefore
+    acts directly on the same 4D observation law used by the environment.
     """
     m_pred = np.asarray(m_pred, dtype=float).reshape(4)
     P_pred = attack_mod.project_to_psd(np.asarray(P_pred, dtype=float))
@@ -248,83 +254,73 @@ def rollout_episode_return_attack_kf_wolf(
 ) -> float:
     """
     Roll out one episode under PGD attacks with a WoLF defense.
-
-    The episode protocol is kept identical to the current covariance-adaptation
-    code so the comparison remains paired step by step:
-    - same initial nominal step,
-    - same 4D PGD attack,
-    - same observation and attack RNG conventions,
-    - same policy evaluation.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
     step_idx = 0
-    obs_filt = m_post.copy()
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
+        with torch.no_grad():
+            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
+            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
+        obs_next, reward, done, info = env.step(action)
+        ep_return += float(reward)
+        if done:
+            break
 
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
 
-    step_idx = 1
-
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
         do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
         if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
-            m_pred_pos, P_pred_pos = policy_obs_state_to_position_belief(
-                m_policy=m_pred,
-                P_policy=P_pred,
+            attack_center = state_to_policy_observation(
+                m_pred,
                 goal=goal,
                 goal_r_max=goal_r_max,
             )
-            obs_star, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value(
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
+            obs_attack, _obj_star, _m_post_attack, _P_post_attack = attack_mod.pgd_attack_on_expected_value_state4d(
                 model=model,
-                obs_nom=obs_clean,
-                m_pred=m_pred_pos,
-                P_pred=P_pred_pos,
-                R=R_position,
+                obs_nom=obs_nom,
+                m_pred=m_pred,
+                P_pred=P_pred,
+                R=R_state,
                 goal=goal,
                 goal_r_max=goal_r_max,
                 attack_sigma=attack_sigma,
@@ -333,47 +329,37 @@ def rollout_episode_return_attack_kf_wolf(
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
                 mc_samples=mc_samples,
-                rng_seed=int(seed_for_attack + 10_000 * step_idx),
+                rng_seed=int(seed_for_attack + 10_000 * (step_idx + 1)),
                 device=device,
             )
-            obs_attack = np.asarray(obs_star, dtype=np.float32)
+            y_used = policy_observation_to_state(
+                obs_attack,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
             m_post, P_post, _diag = wolf_kf_update_policy_observation(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
+                y_obs=y_used,
+                R=R_state,
                 wolf_kind=wolf_kind,
                 imq_soft_threshold=imq_soft_threshold,
                 tmd_threshold=tmd_threshold,
             )
         else:
-            m_post, P_post, _ = kf_update_policy_observation(
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            m_post, P_post, _ = kf_update_shared_state(
                 m_pred=m_pred,
                 P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
+                y_obs=y_used,
+                R=R_state,
             )
 
-        obs_filt = m_post.copy()
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-            action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
-        )
-
-        obs, reward, done, _info = env.step(action)
-        ep_return += float(reward)
         step_idx += 1
-
-        if done:
-            break
 
     return float(ep_return)
 
@@ -393,110 +379,100 @@ def rollout_episode_return_random_attack_kf_wolf(
     device: str = "cpu",
 ) -> float:
     """
-    Roll out one episode under random-boundary ellipsoid attacks with a WoLF defense.
-
-    This mirrors the covariance-adaptation random-attack rollout so the only
-    difference is the filter update rule used after an attacked observation is
-    injected.
+    Roll out one episode under random-boundary attacks with a WoLF defense.
     """
     dev = torch.device(device)
     obs = env.reset()
 
     goal = env.goal.copy()
     goal_r_max = float(env.cfg.goal_r_max)
-    wind_process_std = float(env.cfg.wind_epsilon) * float(env.cfg.wind_volatility)
-    R_policy, Q_policy, _R_position = build_policy_obs_filter_covariances(
-        goal_r_max=goal_r_max,
-        kf_meas_std=kf_meas_std,
-        kf_proc_std=kf_proc_std,
-        wind_process_std=wind_process_std,
-    )
+    R_state, _Q_state = build_shared_filter_covariances(env)
 
     rng_attack_gate = np.random.default_rng(int(seed_for_attack) + 777777)
-    rng_obs_noise = np.random.default_rng(int(seed_for_attack) + 888888)
     rng_attack_sample = np.random.default_rng(int(seed_for_attack) + 999999)
 
-    obs_state = np.asarray(obs, dtype=np.float32)
-    m_post, P_post, _ = kf_update_policy_observation(
-        m_pred=obs_state.copy(),
-        P_pred=R_policy.copy(),
-        y_obs=obs_state,
-        R=R_policy,
+    y_obs = policy_observation_to_state(
+        obs,
+        goal=goal,
+        goal_r_max=goal_r_max,
+    )
+    m_post, P_post, _ = kf_update_shared_state(
+        m_pred=y_obs.copy(),
+        P_pred=R_state.copy(),
+        y_obs=y_obs,
+        R=R_state,
     )
 
     ep_return = 0.0
-    obs_filt = m_post.copy()
-
-    with torch.no_grad():
-        obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
-        action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
-
-    m_pred, P_pred = predict_policy_observation(
-        m_post=m_post,
-        P_post=P_post,
-        action=action,
-        goal_r_max=goal_r_max,
-        Q=Q_policy,
-    )
-
-    obs, reward, done, _info = env.step(action)
-    ep_return += float(reward)
-    if done:
-        return float(ep_return)
-
-    for _ in range(1, env.cfg.max_steps):
-        obs_clean = np.asarray(obs, dtype=np.float32)
-        do_attack = bool(rng_attack_gate.random() < float(attack_prob))
-        noise = rng_obs_noise.normal(0.0, float(kf_meas_std), size=(2,)).astype(np.float32)
-        obs_noisy = obs_clean.copy()
-        obs_noisy[:2] = obs_clean[:2] - noise / float(goal_r_max)
-
-        if do_attack:
-            attack_center = m_pred.copy()
-            attack_sigma = attack_mod.project_to_psd(P_pred + R_policy)
-            obs_random = attack_mod.sample_uniform_from_attack_region(
-                center=attack_center,
-                Sigma=attack_sigma,
-                epsilon=attack_eps,
-                rng=rng_attack_sample,
-            )
-            obs_attack = np.asarray(obs_random, dtype=np.float32)
-            m_post, P_post, _diag = wolf_kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_attack,
-                R=R_policy,
-                wolf_kind=wolf_kind,
-                imq_soft_threshold=imq_soft_threshold,
-                tmd_threshold=tmd_threshold,
-            )
-        else:
-            m_post, P_post, _ = kf_update_policy_observation(
-                m_pred=m_pred,
-                P_pred=P_pred,
-                y_obs=obs_noisy,
-                R=R_policy,
-            )
-
-        obs_filt = m_post.copy()
+    for _ in range(env.cfg.max_steps):
+        obs_filt = state_to_policy_observation(
+            m_post,
+            goal=goal,
+            goal_r_max=goal_r_max,
+        )
 
         with torch.no_grad():
             obs_t = torch.tensor(obs_filt, dtype=torch.float32, device=dev)
             action = model.mean_action(obs_t).cpu().numpy().astype(np.float32)
 
-        m_pred, P_pred = predict_policy_observation(
-            m_post=m_post,
-            P_post=P_post,
-            action=action,
-            goal_r_max=goal_r_max,
-            Q=Q_policy,
-        )
-
-        obs, reward, done, _info = env.step(action)
+        obs_next, reward, done, info = env.step(action)
         ep_return += float(reward)
-
         if done:
             break
+
+        m_pred, P_pred = predict_shared_state(
+            m_post=m_post,
+            P_post=P_post,
+            A_t=info["A_t"],
+            B=info["B"],
+            action=action,
+            Q=info["Q"],
+        )
+
+        obs_nom = np.asarray(obs_next, dtype=np.float32)
+        do_attack = bool(rng_attack_gate.random() < float(attack_prob))
+        if do_attack:
+            attack_center = state_to_policy_observation(
+                m_pred,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            attack_sigma = policy_covariance_from_state_covariance(
+                P_pred + R_state,
+                goal_r_max=goal_r_max,
+            )
+            obs_attack = attack_mod.sample_uniform_from_attack_region(
+                center=attack_center,
+                Sigma=attack_sigma,
+                epsilon=attack_eps,
+                rng=rng_attack_sample,
+            )
+            y_used = policy_observation_to_state(
+                np.asarray(obs_attack, dtype=np.float32),
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            m_post, P_post, _diag = wolf_kf_update_policy_observation(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=y_used,
+                R=R_state,
+                wolf_kind=wolf_kind,
+                imq_soft_threshold=imq_soft_threshold,
+                tmd_threshold=tmd_threshold,
+            )
+        else:
+            y_used = policy_observation_to_state(
+                obs_nom,
+                goal=goal,
+                goal_r_max=goal_r_max,
+            )
+            m_post, P_post, _ = kf_update_shared_state(
+                m_pred=m_pred,
+                P_pred=P_pred,
+                y_obs=y_used,
+                R=R_state,
+            )
 
     return float(ep_return)
 
@@ -573,36 +549,42 @@ def compute_accumulated_reward_data_with_wolf(
 
         cfg_clean.seed = seed
         cfg_clean.obs_noise_std = 0.0
+        cfg_clean.proc_noise_std = float(kf_proc_std)
         cfg_noisy.seed = seed
         cfg_noisy.obs_noise_std = float(noise_std)
+        cfg_noisy.proc_noise_std = float(kf_proc_std)
         cfg_attack.seed = seed
-        cfg_attack.obs_noise_std = 0.0
+        cfg_attack.obs_noise_std = float(kf_meas_std)
+        cfg_attack.proc_noise_std = float(kf_proc_std)
         cfg_random.seed = seed
-        cfg_random.obs_noise_std = 0.0
+        cfg_random.obs_noise_std = float(kf_meas_std)
+        cfg_random.proc_noise_std = float(kf_proc_std)
         cfg_attack_wolf_imq.seed = seed
-        cfg_attack_wolf_imq.obs_noise_std = 0.0
+        cfg_attack_wolf_imq.obs_noise_std = float(kf_meas_std)
+        cfg_attack_wolf_imq.proc_noise_std = float(kf_proc_std)
         cfg_attack_wolf_tmd.seed = seed
-        cfg_attack_wolf_tmd.obs_noise_std = 0.0
+        cfg_attack_wolf_tmd.obs_noise_std = float(kf_meas_std)
+        cfg_attack_wolf_tmd.proc_noise_std = float(kf_proc_std)
         cfg_random_wolf_imq.seed = seed
-        cfg_random_wolf_imq.obs_noise_std = 0.0
+        cfg_random_wolf_imq.obs_noise_std = float(kf_meas_std)
+        cfg_random_wolf_imq.proc_noise_std = float(kf_proc_std)
         cfg_random_wolf_tmd.seed = seed
-        cfg_random_wolf_tmd.obs_noise_std = 0.0
+        cfg_random_wolf_tmd.obs_noise_std = float(kf_meas_std)
+        cfg_random_wolf_tmd.proc_noise_std = float(kf_proc_std)
 
         env_clean = rl_mod.AdvRL2DEnv(cfg_clean)
         env_noisy = env_noisy_class(cfg_noisy)
-        env_attack = rl_mod.AdvRL2DEnv(cfg_attack)
-        env_random = rl_mod.AdvRL2DEnv(cfg_random)
-        env_attack_wolf_imq = rl_mod.AdvRL2DEnv(cfg_attack_wolf_imq)
-        env_attack_wolf_tmd = rl_mod.AdvRL2DEnv(cfg_attack_wolf_tmd)
-        env_random_wolf_imq = rl_mod.AdvRL2DEnv(cfg_random_wolf_imq)
-        env_random_wolf_tmd = rl_mod.AdvRL2DEnv(cfg_random_wolf_tmd)
+        env_attack = env_noisy_class(cfg_attack)
+        env_random = env_noisy_class(cfg_random)
+        env_attack_wolf_imq = env_noisy_class(cfg_attack_wolf_imq)
+        env_attack_wolf_tmd = env_noisy_class(cfg_attack_wolf_tmd)
+        env_random_wolf_imq = env_noisy_class(cfg_random_wolf_imq)
+        env_random_wolf_tmd = env_noisy_class(cfg_random_wolf_tmd)
 
         ret_clean = attack_mod.rollout_episode_return_clean(env_clean, model, device=device)
-        ret_noisy = attack_mod.rollout_episode_return_noisy_kf(
+        ret_noisy = rollout_episode_return_noisy_kf_shared_state(
             env_noisy,
             model,
-            kf_meas_std=kf_meas_std,
-            kf_proc_std=kf_proc_std,
             device=device,
         )
         ret_attack = rollout_episode_return_attack_kf_policyobs(
@@ -709,12 +691,14 @@ def compute_accumulated_reward_data_with_wolf(
             cfg_attack_cov = rl_mod.AdvRLEnvConfig(**{**asdict(base_cfg)})
             cfg_random_cov = rl_mod.AdvRLEnvConfig(**{**asdict(base_cfg)})
             cfg_attack_cov.seed = seed
-            cfg_attack_cov.obs_noise_std = 0.0
+            cfg_attack_cov.obs_noise_std = float(kf_meas_std)
+            cfg_attack_cov.proc_noise_std = float(kf_proc_std)
             cfg_random_cov.seed = seed
-            cfg_random_cov.obs_noise_std = 0.0
+            cfg_random_cov.obs_noise_std = float(kf_meas_std)
+            cfg_random_cov.proc_noise_std = float(kf_proc_std)
 
-            env_attack_cov = rl_mod.AdvRL2DEnv(cfg_attack_cov)
-            env_random_cov = rl_mod.AdvRL2DEnv(cfg_random_cov)
+            env_attack_cov = env_noisy_class(cfg_attack_cov)
+            env_random_cov = env_noisy_class(cfg_random_cov)
 
             ret_attack_cov = rollout_episode_return_attack_kf_covadapt(
                 env_attack_cov,
@@ -809,7 +793,7 @@ def build_panel_specifications(
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
         ("Attack + KF", "acc_attack_kf"),
-        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
+        ("Random boundary attack + KF", "acc_random_kf"),
     ]
 
     attack_spec = [
@@ -849,8 +833,8 @@ def build_panel_specifications(
     )
     random_spec.extend(
         [
-            (r"Boundary $\epsilon$-perturbation + WoLF-IMQ", "acc_random_wolf_imq"),
-            (r"Boundary $\epsilon$-perturbation + WoLF-TMD", "acc_random_wolf_tmd"),
+            ("Random boundary attack + WoLF-IMQ", "acc_random_wolf_imq"),
+            ("Random boundary attack + WoLF-TMD", "acc_random_wolf_tmd"),
         ]
     )
     return baseline_spec, attack_spec, random_spec
@@ -1145,11 +1129,11 @@ def main() -> None:
     or a larger experiment. As in the rest of this folder, the configuration
     is kept in plain Python variables instead of environment variables.
     """
-    model_path = os.path.abspath(os.path.join(RL_4D_DIR, "outputs", "saved_models", "AdvRL_v2_policy.pt"))
+    model_path = rl_mod.default_policy_model_path()
     device = "cpu"
     noise_std = 0.6
-    attack_prob = 0.15
-    attack_eps_values = (0.75, 0.95)
+    attack_region_radius = 2.488
+    attack_prob_values = (0.75, 0.95)
     kf_meas_std = noise_std
     kf_proc_std = 0.03
     pgd_steps = 120
@@ -1173,7 +1157,8 @@ def main() -> None:
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     c_tag = "-".join(f"{value:g}" for value in c_scales).replace(".", "p")
-    eps_tag = "-".join(str(value).replace(".", "p") for value in attack_eps_values)
+    eps_tag = "-".join(str(value).replace(".", "p") for value in attack_prob_values)
+    radius_tag = str(attack_region_radius).replace(".", "p")
     imq_tag = str(wolf_imq_soft_threshold).replace(".", "p")
     tmd_tag = str(wolf_tmd_threshold).replace(".", "p")
 
@@ -1181,31 +1166,31 @@ def main() -> None:
         out_dir,
         (
             "comparison_RL_v2_wind_4dattack_two_eps_wolf_"
-            f"N{n_episodes}_p{attack_prob}_eps{eps_tag}_c{c_tag}_"
+            f"N{n_episodes}_eps{eps_tag}_rad{radius_tag}_c{c_tag}_"
             f"imq{imq_tag}_tmd{tmd_tag}.png"
         ),
     )
 
     data_by_epsilon: dict[float, dict[str, np.ndarray | float | int]] = {}
-    for attack_eps in attack_eps_values:
+    for attack_prob in attack_prob_values:
         single_eps_outpath = os.path.join(
             out_dir,
             (
                 "comparison_RL_v2_wind_4dattack_wolf_"
-                f"N{n_episodes}_p{attack_prob}_eps{str(attack_eps).replace('.', 'p')}_"
+                f"N{n_episodes}_eps{str(attack_prob).replace('.', 'p')}_rad{radius_tag}_"
                 f"c{c_tag}_imq{imq_tag}_tmd{tmd_tag}.png"
             ),
         )
         data_path = data_path_for_plot(single_eps_outpath)
 
-        def compute_data_for_epsilon(attack_eps_value: float = float(attack_eps)) -> dict[str, np.ndarray | float | int]:
+        def compute_data_for_epsilon(attack_prob_value: float = float(attack_prob)) -> dict[str, np.ndarray | float | int]:
             return compute_accumulated_reward_data_with_wolf(
                 n_episodes=n_episodes,
                 seed0=seed0,
                 model_path=model_path,
                 noise_std=noise_std,
-                attack_eps=attack_eps_value,
-                attack_prob=attack_prob,
+                attack_eps=attack_region_radius,
+                attack_prob=attack_prob_value,
                 kf_meas_std=kf_meas_std,
                 kf_proc_std=kf_proc_std,
                 pgd_steps=pgd_steps,
@@ -1220,7 +1205,7 @@ def main() -> None:
                 device=device,
             )
 
-        data_by_epsilon[float(attack_eps)] = cached_npz(
+        data_by_epsilon[float(attack_prob)] = cached_npz(
             data_path,
             compute_data_for_epsilon,
             force=force_cache,
@@ -1228,7 +1213,7 @@ def main() -> None:
 
     plot_accumulated_reward_comparison_two_epsilons_with_wolf(
         data_by_epsilon=data_by_epsilon,
-        epsilon_values=tuple(float(value) for value in attack_eps_values),
+        epsilon_values=tuple(float(value) for value in attack_prob_values),
         outpath=outpath,
     )
     print(f"Saved figure to: {outpath}")
