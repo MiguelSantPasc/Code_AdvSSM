@@ -1,11 +1,19 @@
 # Adversarial State-Space Models
 
-Research code for adversarial attacks on state-space models, with a focus on
-Linear Gaussian State-Space Models, Kalman filtering, RTS smoothing, and RL
-agents that act from noisy or adversarial observations.
+This repository studies adversarial attacks and online defenses for
+state-space models, with experiments ranging from classical linear-Gaussian
+filtering to nonlinear objectives, covariance adaptation, and RL agents that
+act from noisy observations.
 
-The repository is script-oriented rather than package-oriented: each experiment
-has a `main()` and can be run directly from the repository root.
+The most important idea in this repository is the separation between:
+
+1. `shared_ssm/`, which is the core reusable library.
+2. The other top-level folders, which are experiment suites and worked
+   examples built on top of that library.
+
+If you want to understand or extend the project, start with `shared_ssm/`.
+If you want to reproduce figures or inspect concrete attack/defense workflows,
+then move to the experiment folders.
 
 ## Setup
 
@@ -15,157 +23,322 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Use the repository root as the working directory:
+Run scripts from the repository root:
 
 ```bash
 cd C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM
 ```
 
-## Repository Layout
+## Repository Philosophy
+
+This is a script-oriented research repository with a shared library at its
+center.
+
+- `shared_ssm/` contains the reusable numerical and modeling building blocks.
+- `AdvSSM/`, `AdvNonLinearAttack/`, `CovarianceAdaptation/`, `Gymnasium/`,
+  and `RL/` contain concrete studies, benchmarks, and plotting scripts.
+- Most experiment files have their own `main()`-style execution path and can
+  be run directly.
+
+That means the repository should be read in this order:
+
+1. `shared_ssm/` to understand the common abstractions.
+2. One experiment folder to see how those abstractions are applied in practice.
+3. The corresponding `outputs/`, `data/`, `figures/`, or model folders if you
+   want cached results or generated artifacts.
+
+## The Core Library: `shared_ssm/`
+
+`shared_ssm/` is the backbone of the repository. It centralizes the reusable
+logic that would otherwise be duplicated across experiments.
+
+At a high level, the package provides:
+
+- Linear-Gaussian state-space model containers and validation.
+- Kalman prediction and update recursions.
+- Full-sequence filtering in online and offline modes.
+- Optional RTS smoothing for offline inference.
+- Leave-one-out and causal attack geometry in observation space.
+- Analytic attacks for linear objectives over ellipsoidal constraints.
+- Projected-gradient attacks for nonlinear expectations.
+- Torch-based attacks for RL return objectives.
+- Online defenses such as covariance adaptation and WoLF-style measurement
+  updates.
+- Shared SPD / PSD linear-algebra utilities and Gaussian likelihood helpers.
+- Shared artifact and cache helpers for figures, data, and saved outputs.
+- Compatibility helpers in `legacy.py` so older experiment scripts can keep
+  their existing interfaces while reusing the shared implementation.
+
+### Internal Map of `shared_ssm/`
 
 ```text
-AdvSSM/
-  Core Kalman/RTS, leave-one-out, KKT attack, sensitivity, and Monte Carlo scripts.
+shared_ssm/
+  __init__.py
+    Main public API used by the experiments.
 
-AdvNonLinearAttack/
-  White-box attacks on nonlinear functions E[g(x_t) | y_t', y_-t].
+  linear_gaussian.py
+    LGSSM model definitions, Kalman prediction/update, filtering, smoothing.
 
-RL/experiments/v2_wind/
-  PPO-style point-agent with wind, plus clean/noisy/KF/adversarial evaluation.
+  geometry.py
+    Shared attack geometry for online and offline observation attacks.
 
-RL/experiments/AdvRL_policy/
-  Earlier no-wind RL point-agent experiments.
+  attacks/
+    linear.py      Analytic linear/KKT-style attacks.
+    nonlinear.py   PGD-style attacks on E[g(s_t)] objectives.
+    rl.py          Torch-based attacks for RL return objectives.
 
-RL/experiments/others/
-  Side experiments: Gaussian-sign bandit/POMDP, CartPole noise, contour plots.
+  defenses/
+    covariance_adaptation.py   Online covariance adaptation utilities.
+    wolf.py                    WoLF robust measurement-update utilities.
 
-RL/results/, AdvSSM/output/, AdvNonLinearAttack/output/
-  Generated figures and cached experiment data.
+  constraints.py
+    Ellipsoidal feasibility regions, Mahalanobis distances, projections.
+
+  linalg.py
+    Stable SPD/PSD helpers used throughout the repository.
+
+  artifacts.py
+    Shared output-directory and `.npz` cache helpers.
+
+  results.py
+    Helpers to inject an attacked observation and rerun inference.
+
+  covariance_experiments.py
+    Shared utilities used by covariance-adaptation experiment scripts.
+
+  legacy.py
+    Compatibility wrappers for older script conventions.
 ```
 
-## Core Ideas
+### Why `shared_ssm/` Matters
 
-Most SSM scripts use the model:
+This folder is not just a helper collection. It is the place where the common
+mathematical and numerical contract of the repository lives.
 
-```text
-x_{t+1} = A_t x_t + B_t u_t + w_t
-y_t     = H_t x_t + D_t u_t + v_t
+When different folders study:
+
+- KKT attacks on linear SSMs,
+- nonlinear attacks on posterior expectations,
+- covariance-adaptation defenses,
+- CartPole observation attacks,
+- wind-navigation RL attacks and defenses,
+
+they are all reusing the same shared notions of:
+
+- state and observation conventions,
+- Kalman inference,
+- attack regions,
+- Gaussian geometry,
+- PSD stabilization,
+- and output/cache organization.
+
+So if you add new reusable functionality, it should usually go into
+`shared_ssm/` first, and only then be consumed by a specific experiment
+script.
+
+### Typical Import Surface
+
+Most experiment scripts use `shared_ssm` like a small library:
+
+```python
+from shared_ssm import LinearGaussianStateSpaceModel
+from shared_ssm import build_attack_geometry
+from shared_ssm import run_kalman_inference
+from shared_ssm.attacks import solve_torch_rl_expectation_attack
+from shared_ssm.defenses import run_online_covariance_adaptation
 ```
 
-The attack workflow is:
+For package-specific details, see [`shared_ssm/README.md`](shared_ssm/README.md).
 
-1. Simulate or load a trajectory.
-2. Run Kalman filtering and RTS smoothing.
-3. Remove one observation `y_t` and compute `p(y_t | y_-t) = N(mu_t, Sigma_t)`.
-4. Pick an adversarial observation `y_t*` inside the plausible ellipsoid
-   `(y_t* - mu_t)^T Sigma_t^-1 (y_t* - mu_t) <= epsilon`.
-5. Re-run smoothing or RL evaluation and compare the result.
+## Experiment Folders
 
-For the KKT scripts, the attack usually maximizes:
+The remaining top-level directories are best understood as example suites or
+application domains built around the shared library.
 
-```text
-||X_t (y_t* - y_t)||^2
-```
+### `AdvSSM/`
 
-For the nonlinear scripts, the attack uses projected gradient descent to move:
+This folder contains the classical linear-Gaussian attack experiments. It is
+the most direct illustration of the original adversarial SSM workflow:
 
-```text
-E[g(x_t) | y_t*, y_-t]
-```
+- simulate a trajectory,
+- run Kalman filtering and smoothing,
+- remove or perturb one observation,
+- constrain the perturbation to a plausible ellipsoid,
+- and measure how the posterior state estimate changes.
 
-toward a target value.
+Representative scripts:
 
-## Cached Outputs
+- `AdvSSM/KKTOpt.py`: fixed-time KKT attack with the main multi-panel figure.
+- `AdvSSM/KKTOpt_epsdep.py`: attack effect as a function of `epsilon`.
+- `AdvSSM/KKTOpt_tdependent.py`: time-dependent attack studies.
+- `AdvSSM/KKTOptSensitivity.py`: sensitivity analyses.
+- `AdvSSM/Epsilon_direction.py`: geometry of attack directions across budgets.
+- `AdvSSM/Regions.py`: feasible-region exploration.
 
-Plots should have matching data files whenever the script is expensive or used
-for reported figures. The cache convention is:
+In practice, `AdvSSM/` is the cleanest place to study the linear attack story
+before moving to nonlinear or RL settings.
 
-```text
-some_plot.png
-some_plot.npz
-```
+### `AdvNonLinearAttack/`
 
-If the `.npz` exists, the script loads the cached data and redraws the plot.
-This lets you edit labels, colors, layouts, or figure style without rerunning
-Monte Carlo, PGD, KF rollouts, or RL evaluation.
+This folder extends the attack idea from linear state objectives to nonlinear
+functionals such as `E[g(s_t) | o_t', o_-t]`.
 
-The shared cache helpers live in:
+The focus here is:
 
-```text
-AdvSSM/io_utils.py
-```
+- white-box attacks on nonlinear expectations,
+- projected gradient descent inside ellipsoidal attack regions,
+- sensitivity and Jacobian-based analyses,
+- 2D and 3D illustrative cases.
 
-Cached scripts currently include:
+Representative scripts:
 
-```text
-AdvSSM/KKTOpt.py
-AdvSSM/Epsilon_direction.py
-AdvSSM/KKTOpt_epsdep.py
-AdvSSM/KKTOpt_tdependent.py
-AdvSSM/KKTOptSensitivity.py
-AdvNonLinearAttack/GradientAttack.py
-AdvNonLinearAttack/GradientAttackNoGrad.py
-AdvNonLinearAttack/AttackSense.py
-AdvNonLinearAttack/AttackSense3D.py
-RL/experiments/v2_wind/AdvRL_wind_noise.py
-RL/experiments/v2_wind/AdvRL_wind_KF.py
-RL/experiments/v2_wind/AdvRL_wind_AttackSSM.py
-RL/experiments/v2_wind/AdvRL_wind_AttackSSM_plottraj.py
-```
+- `AdvNonLinearAttack/GradientAttack.py`
+- `AdvNonLinearAttack/GradientAttackNoGrad.py`
+- `AdvNonLinearAttack/GradientAttack3D.py`
+- `AdvNonLinearAttack/AttackSense.py`
+- `AdvNonLinearAttack/AttackSense3D.py`
+- `AdvNonLinearAttack/AttackSense3D_CallSummary.py`
 
-Most scripts use a local `force_recompute = False` flag. Change it to `True`
-inside the script, or delete the matching `.npz`, when you intentionally want
-fresh data.
+Conceptually, this folder shows how the same `shared_ssm` geometry can support
+objectives that are no longer simple quadratic linear-state displacements.
 
-## Common Commands
+### `CovarianceAdaptation/`
 
-One-shot 2D KKT attack:
+This folder contains experiments for online defenses based on adapting the
+observation covariance when attacks are suspected.
+
+The main themes are:
+
+- defended Kalman filtering under attacked observations,
+- lambda sweeps for directional covariance inflation,
+- comparisons between clean, attacked, and defended trajectories,
+- extension from linear settings to nonlinear `g(s_t)` studies.
+
+Representative scripts:
+
+- `CovarianceAdaptation/kf_covadapt_lambda_sweep.py`
+- `CovarianceAdaptation/nonlinear_g_covadapt.py`
+
+This directory is best read as the defense-focused counterpart to the attack
+experiments in `AdvSSM/` and `AdvNonLinearAttack/`.
+
+### `Gymnasium/`
+
+This folder adapts the shared attack/defense ideas to Gymnasium-based control
+problems, especially CartPole.
+
+The emphasis is on:
+
+- observation attacks in a standard control benchmark,
+- CartPole covariance-adaptation and WoLF comparisons,
+- benchmark-style outputs with figures, CSV summaries, and cached data.
+
+Representative scripts:
+
+- `Gymnasium/cartpole_defense_benchmark.py`
+- `Gymnasium/cartpole_covadapt_compare_epsilons_wolf.py`
+- `Gymnasium/sweep_cartpole_wolf_only.py`
+
+This is the bridge between the core SSM machinery and a familiar benchmark
+environment from control/RL tooling.
+
+### `RL/`
+
+This folder contains the RL experiments for the wind-navigation setting.
+Here the attacked observation does not just change a posterior estimate; it can
+change the agent's control decisions and long-horizon return.
+
+The folder includes:
+
+- environment and model setup for the wind-navigation task,
+- online attacks on observations,
+- defense benchmarks under matched randomness,
+- WoLF tuning and comparison scripts,
+- trajectory and value-function visualization utilities.
+
+Representative scripts:
+
+- `RL/wind_rl_setup.py`
+- `RL/compare_wind_online_attack_rewards.py`
+- `RL/defense_benchmark.py`
+- `RL/wolf_benchmark.py`
+- `RL/random_contour_benchmark.py`
+- `RL/final_comparison.py`
+
+If `AdvSSM/` shows the attack geometry in the simplest setting, `RL/` shows
+the most application-driven end of the repository.
+
+## Outputs and Cached Artifacts
+
+Several folders contain generated artifacts such as:
+
+- `outputs/figures/`
+- `outputs/data/`
+- `outputs/saved_models/`
+- `RL/figures/`
+- `RL/data/`
+- `RL/model/`
+
+The shared cache helpers live in `shared_ssm/artifacts.py`. They standardize:
+
+- where figures are saved,
+- where numerical `.npz` payloads are cached,
+- and how expensive computations are reused when only the plotting layer
+  changes.
+
+This is especially useful for Monte Carlo studies, PGD-based attacks, and RL
+benchmarks that are expensive to rerun.
+
+## Suggested Starting Points
+
+If you are new to the repository, a good reading order is:
+
+1. `shared_ssm/README.md`
+2. `shared_ssm/__init__.py`
+3. `shared_ssm/linear_gaussian.py`
+4. `shared_ssm/geometry.py`
+5. One of the following example scripts, depending on your interest:
+   - `AdvSSM/KKTOpt.py`
+   - `AdvNonLinearAttack/GradientAttack.py`
+   - `CovarianceAdaptation/kf_covadapt_lambda_sweep.py`
+   - `Gymnasium/cartpole_defense_benchmark.py`
+   - `RL/defense_benchmark.py`
+
+## Example Commands
+
+Linear-Gaussian fixed-time attack:
 
 ```bash
 python AdvSSM\KKTOpt.py
 ```
 
-Multi-epsilon tangent geometry:
-
-```bash
-python AdvSSM\Epsilon_direction.py
-```
-
-Monte Carlo attack effect over epsilon:
-
-```bash
-python AdvSSM\KKTOpt_epsdep.py
-```
-
-Nonlinear attack on `E[g(x_t)]`:
+Nonlinear expectation attack:
 
 ```bash
 python AdvNonLinearAttack\GradientAttack.py
-python AdvNonLinearAttack\GradientAttackNoGrad.py
 ```
 
-Train or load the wind RL policy and generate basic plots:
+Covariance-adaptation lambda sweep:
 
 ```bash
-python RL\experiments\v2_wind\AdvRL_wind.py
+python CovarianceAdaptation\kf_covadapt_lambda_sweep.py
 ```
 
-Evaluate clean vs noisy vs KF/adversarial observations:
+CartPole defense benchmark:
 
 ```bash
-python RL\experiments\v2_wind\AdvRL_wind_noise.py
-python RL\experiments\v2_wind\AdvRL_wind_KF.py
-python RL\experiments\v2_wind\AdvRL_wind_AttackSSM.py
-python RL\experiments\v2_wind\AdvRL_wind_AttackSSM_plottraj.py
+python Gymnasium\cartpole_defense_benchmark.py
 ```
 
-## Notes For Future Changes
+Wind-navigation RL defense benchmark:
 
-- Prefer adding shared helpers in `AdvSSM/io_utils.py` rather than repeating
-  cache and output-directory code.
-- Keep mathematical refactors conservative. Several scripts use slightly
-  different control-indexing conventions, especially `u.shape == (T, n_u)` vs
-  `u.shape == (T+1, n_u)`.
-- Save the numerical arrays needed to recreate each figure before styling the
-  plot. That keeps experiments reproducible and cheap to redraw.
-- Generated model checkpoints under `RL/saved_models/` are ignored by git.
+```bash
+python RL\defense_benchmark.py
+```
+
+## In One Sentence
+
+`shared_ssm/` is the reusable library and mathematical core of the project;
+the other folders are specialized experiment suites that demonstrate how to
+apply that core to linear attacks, nonlinear attacks, online defenses,
+Gymnasium benchmarks, and RL policies.
