@@ -1,0 +1,15 @@
+method,filter_or_defense,hyperparameters,attack_type,lambda,mean_return,std_return,mean_state_estimation_error,mean_final_goal_distance,success_rate,mean_gamma_t,gamma_ge_threshold_rate,mean_effective_inflation,mean_wolf_weight,wolf_strong_discount_rate,zero_pgd_direction_rate,num_runs
+Clean,clean,{},clean,0.0,48.63675455252329,0.0,0.0,0.5725451111793518,1.0,0.0,0.0,0.0,,,0.0,1
+Noisy + KF,kf,{},none,0.0,48.572106301784515,0.0,0.11716768250115979,0.5471107959747314,1.0,0.0,0.0,0.0,,,0.0,1
+"PGD estimated, no defense",kf,{},pgd_estimated,0.0,48.56665389239788,0.0,0.118669458018603,0.5669165849685669,1.0,0.0,0.0,0.0,,,0.0,1
+"PGD estimated + CovAdap, lambda=0.5",covariance_adaptation_observation_imq,{},pgd_estimated,0.5,48.55887797474861,0.0,0.13782138172370628,0.6337463855743408,1.0,0.07789458629066144,0.1,0.03894729314533072,,,0.0,1
+"PGD estimated + CovAdap, lambda=1.0",covariance_adaptation_observation_imq,{},pgd_estimated,1.0,48.55717298388481,0.0,0.13992881156989215,0.6416171193122864,1.0,0.07789458629066144,0.1,0.07789458629066144,,,0.0,1
+"PGD estimated + CovAdap, lambda=2.0",covariance_adaptation_observation_imq,{},pgd_estimated,2.0,48.55610533058643,0.0,0.1411538696634019,0.6462624073028564,1.0,0.07789458629066144,0.1,0.15578917258132288,,,0.0,1
+"Random contour, no defense",kf,{},random_contour,0.0,47.99688861767451,0.0,0.24146775462822687,0.4366287589073181,1.0,0.0,0.0,0.0,,,0.0,1
+"Random contour + CovAdap, lambda=0.5",covariance_adaptation_observation_imq,{},random_contour,0.5,48.48100730280082,0.0,0.14945670003006437,0.4108576774597168,1.0,0.06753056281052744,0.09090909090909091,0.03376528140526372,,,0.0,1
+"Random contour + CovAdap, lambda=1.0",covariance_adaptation_observation_imq,{},random_contour,1.0,48.5058488920331,0.0,0.14440485414883888,0.3623882234096527,1.0,0.06753056281052744,0.09090909090909091,0.06753056281052744,,,0.0,1
+"Random contour + CovAdap, lambda=2.0",covariance_adaptation_observation_imq,{},random_contour,2.0,48.52072180559237,0.0,0.14192677397504017,0.33459213376045227,1.0,0.06753056281052744,0.09090909090909091,0.13506112562105488,,,0.0,1
+PGD estimated + WoLF-IMQ,wolf_imq,"{""imq_soft_threshold"": 0.35, ""kind"": ""imq"", ""min_weight"": 1e-06, ""tmd_threshold"": 3.0}",pgd_estimated,0.0,48.56880482534568,0.0,0.12279666873699113,0.5729753971099854,1.0,0.0,0.0,0.0,0.7002403053496141,0.0,0.0,1
+Random contour + WoLF-IMQ,wolf_imq,"{""imq_soft_threshold"": 0.35, ""kind"": ""imq"", ""min_weight"": 1e-06, ""tmd_threshold"": 3.0}",random_contour,0.0,48.462504732112095,0.0,0.15397631607443862,0.43981024622917175,1.0,0.0,0.0,0.0,0.32714424907744205,0.09090909090909091,0.0,1
+PGD estimated + WoLF-TMD,wolf_tmd,"{""imq_soft_threshold"": 1.0, ""kind"": ""tmd"", ""min_weight"": 1e-06, ""tmd_threshold"": 1.5}",pgd_estimated,0.0,48.56665389239788,0.0,0.118669458018603,0.5669165849685669,1.0,0.0,0.0,0.0,,0.0,0.0,1
+Random contour + WoLF-TMD,wolf_tmd,"{""imq_soft_threshold"": 1.0, ""kind"": ""tmd"", ""min_weight"": 1e-06, ""tmd_threshold"": 1.5}",random_contour,0.0,48.56012904147307,0.0,0.14025550336270304,0.628093421459198,1.0,0.0,0.0,0.0,0.001,0.1,0.0,1

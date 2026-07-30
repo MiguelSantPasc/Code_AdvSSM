@@ -50,33 +50,31 @@ _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from AdvSSM.io_utils import data_path_for_plot, load_npz, save_npz
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import load_npz
+from shared_ssm.artifacts import save_npz
 
 try:
     from AttackSense3D import (
-        estimate_E_g,
         g_scalar,
         g_scalar_grad,
         get_system_parameters,
-        kalman_filter_nd,
-        rts_smoother_nd,
-        simulate_lgssm_nd,
-        white_box_point_attack_nd,
     )
 except ModuleNotFoundError:
     if _THIS_DIR not in sys.path:
         sys.path.insert(0, _THIS_DIR)
 
     from AttackSense3D import (
-        estimate_E_g,
         g_scalar,
         g_scalar_grad,
         get_system_parameters,
-        kalman_filter_nd,
-        rts_smoother_nd,
-        simulate_lgssm_nd,
-        white_box_point_attack_nd,
     )
+
+from shared_ssm.legacy import estimate_E_g
+from shared_ssm.legacy import kalman_filter_nd_current_observation as kalman_filter_nd
+from shared_ssm.legacy import rts_smoother_nd
+from shared_ssm.legacy import simulate_lgssm_nd_current_observation as simulate_lgssm_nd
+from shared_ssm.legacy import white_box_point_attack_nd
 
 
 # ============================================================

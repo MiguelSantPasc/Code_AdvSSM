@@ -1,0 +1,57 @@
+method,attack_type,filter_or_defense,lambda,episode_seed,episode_return,success,mean_state_estimation_error,steps
+Clean,clean,clean,0.0,20260729,500.0,1.0,0.0,500
+Clean,clean,clean,0.0,20260730,500.0,1.0,0.0,500
+Clean,clean,clean,0.0,20260731,500.0,1.0,0.0,500
+Clean,clean,clean,0.0,20260732,500.0,1.0,0.0,500
+Noisy + KF,none,kf,0.0,20260729,500.0,1.0,0.06488643809090404,500
+Noisy + KF,none,kf,0.0,20260730,500.0,1.0,0.0717481374270987,500
+Noisy + KF,none,kf,0.0,20260731,500.0,1.0,0.06580586816853973,500
+Noisy + KF,none,kf,0.0,20260732,500.0,1.0,0.059732332107098544,500
+"PGD estimated, no defense",pgd_estimated,kf,0.0,20260729,113.0,0.0,0.17368767611487934,113
+"PGD estimated, no defense",pgd_estimated,kf,0.0,20260730,151.0,0.0,0.15148925696648902,151
+"PGD estimated, no defense",pgd_estimated,kf,0.0,20260731,131.0,0.0,0.19974599637647378,131
+"PGD estimated, no defense",pgd_estimated,kf,0.0,20260732,51.0,0.0,0.13536494205709063,51
+"PGD estimated + CovAdap, lambda=0.5",pgd_estimated,covadapt,0.5,20260729,500.0,1.0,0.09620577531523189,500
+"PGD estimated + CovAdap, lambda=0.5",pgd_estimated,covadapt,0.5,20260730,500.0,1.0,0.10958181144559649,500
+"PGD estimated + CovAdap, lambda=0.5",pgd_estimated,covadapt,0.5,20260731,500.0,1.0,0.10232218133569024,500
+"PGD estimated + CovAdap, lambda=0.5",pgd_estimated,covadapt,0.5,20260732,254.0,0.0,0.06850012462981861,254
+"PGD estimated + CovAdap, lambda=1",pgd_estimated,covadapt,1.0,20260729,500.0,1.0,0.08348582785147407,500
+"PGD estimated + CovAdap, lambda=1",pgd_estimated,covadapt,1.0,20260730,466.0,0.0,0.10253259465417665,466
+"PGD estimated + CovAdap, lambda=1",pgd_estimated,covadapt,1.0,20260731,157.0,0.0,0.08169664755702143,157
+"PGD estimated + CovAdap, lambda=1",pgd_estimated,covadapt,1.0,20260732,253.0,0.0,0.06376101054994292,253
+"PGD estimated + CovAdap, lambda=2",pgd_estimated,covadapt,2.0,20260729,500.0,1.0,0.07550607682707268,500
+"PGD estimated + CovAdap, lambda=2",pgd_estimated,covadapt,2.0,20260730,464.0,0.0,0.08661493991045416,464
+"PGD estimated + CovAdap, lambda=2",pgd_estimated,covadapt,2.0,20260731,500.0,1.0,0.08078248776045904,500
+"PGD estimated + CovAdap, lambda=2",pgd_estimated,covadapt,2.0,20260732,367.0,0.0,0.05843236572932917,367
+PGD estimated + WoLF-IMQ,pgd_estimated,wolf_imq,0.0,20260729,278.0,0.0,0.12445516700841286,278
+PGD estimated + WoLF-IMQ,pgd_estimated,wolf_imq,0.0,20260730,153.0,0.0,0.1448222634564416,153
+PGD estimated + WoLF-IMQ,pgd_estimated,wolf_imq,0.0,20260731,78.0,0.0,0.14064838245686104,78
+PGD estimated + WoLF-IMQ,pgd_estimated,wolf_imq,0.0,20260732,414.0,0.0,0.1107802675472107,414
+PGD estimated + WoLF-TMD,pgd_estimated,wolf_tmd,0.0,20260729,500.0,1.0,0.0795589749258955,500
+PGD estimated + WoLF-TMD,pgd_estimated,wolf_tmd,0.0,20260730,208.0,0.0,0.0773550150416264,208
+PGD estimated + WoLF-TMD,pgd_estimated,wolf_tmd,0.0,20260731,500.0,1.0,0.08300671861208096,500
+PGD estimated + WoLF-TMD,pgd_estimated,wolf_tmd,0.0,20260732,403.0,0.0,0.06618600226324509,403
+"Random contour, no defense",random_contour,kf,0.0,20260729,248.0,0.0,0.08499529869805678,248
+"Random contour, no defense",random_contour,kf,0.0,20260730,417.0,0.0,0.0960538906025102,417
+"Random contour, no defense",random_contour,kf,0.0,20260731,500.0,1.0,0.07906612404995353,500
+"Random contour, no defense",random_contour,kf,0.0,20260732,484.0,0.0,0.07443566976182545,484
+"Random contour + CovAdap, lambda=0.5",random_contour,covadapt,0.5,20260729,500.0,1.0,0.07792623856403261,500
+"Random contour + CovAdap, lambda=0.5",random_contour,covadapt,0.5,20260730,467.0,0.0,0.08837737726025761,467
+"Random contour + CovAdap, lambda=0.5",random_contour,covadapt,0.5,20260731,500.0,1.0,0.07225621643987505,500
+"Random contour + CovAdap, lambda=0.5",random_contour,covadapt,0.5,20260732,500.0,1.0,0.06296042769159706,500
+"Random contour + CovAdap, lambda=1",random_contour,covadapt,1.0,20260729,261.0,0.0,0.07265919605172647,261
+"Random contour + CovAdap, lambda=1",random_contour,covadapt,1.0,20260730,224.0,0.0,0.08139252787447236,224
+"Random contour + CovAdap, lambda=1",random_contour,covadapt,1.0,20260731,500.0,1.0,0.07192719616168605,500
+"Random contour + CovAdap, lambda=1",random_contour,covadapt,1.0,20260732,500.0,1.0,0.060970680431876166,500
+"Random contour + CovAdap, lambda=2",random_contour,covadapt,2.0,20260729,500.0,1.0,0.07223230891938721,500
+"Random contour + CovAdap, lambda=2",random_contour,covadapt,2.0,20260730,465.0,0.0,0.08285192386964169,465
+"Random contour + CovAdap, lambda=2",random_contour,covadapt,2.0,20260731,500.0,1.0,0.07202251686315007,500
+"Random contour + CovAdap, lambda=2",random_contour,covadapt,2.0,20260732,500.0,1.0,0.059853784755861,500
+Random contour + WoLF-IMQ,random_contour,wolf_imq,0.0,20260729,500.0,1.0,0.08577141683903515,500
+Random contour + WoLF-IMQ,random_contour,wolf_imq,0.0,20260730,414.0,0.0,0.08726267079375619,414
+Random contour + WoLF-IMQ,random_contour,wolf_imq,0.0,20260731,267.0,0.0,0.07062958233561072,267
+Random contour + WoLF-IMQ,random_contour,wolf_imq,0.0,20260732,485.0,0.0,0.07364078595239067,485
+Random contour + WoLF-TMD,random_contour,wolf_tmd,0.0,20260729,500.0,1.0,0.10983122573443549,500
+Random contour + WoLF-TMD,random_contour,wolf_tmd,0.0,20260730,500.0,1.0,0.09464473799286396,500
+Random contour + WoLF-TMD,random_contour,wolf_tmd,0.0,20260731,270.0,0.0,0.09343168562524219,270
+Random contour + WoLF-TMD,random_contour,wolf_tmd,0.0,20260732,229.0,0.0,0.08568055816145727,229

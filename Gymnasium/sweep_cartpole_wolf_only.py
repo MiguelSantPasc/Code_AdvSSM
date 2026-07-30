@@ -55,10 +55,8 @@ for import_path in (CURRENT_DIR, REPO_ROOT):
 
 import cartpole_covadapt_compare_epsilons_wolf as cartpole_mod
 
-try:
-    from AdvSSM.io_utils import data_dir_for, save_npz
-except ModuleNotFoundError:
-    from io_utils import data_dir_for, save_npz
+from shared_ssm.artifacts import data_dir_for
+from shared_ssm.artifacts import save_npz
 
 
 @dataclass(frozen=True)

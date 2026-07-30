@@ -1,0 +1,15 @@
+method,filter_or_defense,hyperparameters,attack_type,lambda,mean_return,std_return,mean_state_estimation_error,mean_episode_length,success_rate,mean_gamma_t,gamma_ge_threshold_rate,mean_effective_inflation,mean_wolf_weight,wolf_strong_discount_rate,num_runs
+Clean,clean,"{""lambda_covariance"": 0.0, ""wolf_kind"": null}",clean,0.0,500.0,0.0,0.0,500.0,1.0,0.0,0.0,0.0,,,4
+Noisy + KF,kf,"{""lambda_covariance"": 0.0, ""wolf_kind"": null}",none,0.0,500.0,0.0,0.06554319394841025,500.0,1.0,0.0,0.0,0.0,,,4
+"PGD estimated, no defense",kf,"{""lambda_covariance"": 0.0, ""wolf_kind"": null}",pgd_estimated,0.0,111.5,43.21650919112587,0.16507196787873318,111.5,0.0,0.0,0.0,0.0,,,4
+"PGD estimated + CovAdap, lambda=0.5",covadapt,"{""lambda_covariance"": 0.5, ""wolf_kind"": null}",pgd_estimated,0.5,438.5,123.0,0.09415247318158429,438.5,0.75,0.19667604380424397,0.19897377423033066,0.09833802190212199,,,4
+"PGD estimated + CovAdap, lambda=1",covadapt,"{""lambda_covariance"": 1.0, ""wolf_kind"": null}",pgd_estimated,1.0,344.0,165.8010856418015,0.08286902015315377,344.0,0.25,0.19237455348265012,0.19404069767441862,0.19237455348265012,,,4
+"PGD estimated + CovAdap, lambda=2",covadapt,"{""lambda_covariance"": 2.0, ""wolf_kind"": null}",pgd_estimated,2.0,457.75,62.83510165504628,0.07533396755682877,457.75,0.5,0.19728776584228425,0.198798470780994,0.3945755316845685,,,4
+PGD estimated + WoLF-IMQ,wolf_imq,"{""lambda_covariance"": 0.0, ""wolf_kind"": ""imq""}",pgd_estimated,0.0,230.75,147.4118380592278,0.13017652011723155,230.75,0.0,0.0,0.0,0.0,0.7259807960412032,0.0,4
+PGD estimated + WoLF-TMD,wolf_tmd,"{""lambda_covariance"": 0.0, ""wolf_kind"": ""tmd""}",pgd_estimated,0.0,402.75,137.6502209708845,0.07652667771071198,402.75,0.5,0.0,0.0,0.0,0.0010000000000000002,1.0,4
+"Random contour, no defense",kf,"{""lambda_covariance"": 0.0, ""wolf_kind"": null}",random_contour,0.0,412.25,115.25153650458056,0.0836377457780865,412.25,0.25,0.0,0.0,0.0,,,4
+"Random contour + CovAdap, lambda=0.5",covadapt,"{""lambda_covariance"": 0.5, ""wolf_kind"": null}",random_contour,0.5,491.75,16.5,0.07538006498894058,491.75,0.75,0.174123566328248,0.199288256227758,0.087061783164124,,,4
+"Random contour + CovAdap, lambda=1",covadapt,"{""lambda_covariance"": 1.0, ""wolf_kind"": null}",random_contour,1.0,371.25,149.43309539723788,0.07173740012994026,371.25,0.5,0.1761450425307422,0.19797979797979798,0.1761450425307422,,,4
+"Random contour + CovAdap, lambda=2",covadapt,"{""lambda_covariance"": 2.0, ""wolf_kind"": null}",random_contour,2.0,491.25,17.5,0.07174013360201,491.25,0.75,0.177802236237726,0.1989821882951654,0.355604472475452,,,4
+Random contour + WoLF-IMQ,wolf_imq,"{""lambda_covariance"": 0.0, ""wolf_kind"": ""imq""}",random_contour,0.0,416.5,106.49100118476365,0.07932611398019818,416.5,0.25,0.0,0.0,0.0,0.7328344744708168,0.0,4
+Random contour + WoLF-TMD,wolf_tmd,"{""lambda_covariance"": 0.0, ""wolf_kind"": ""tmd""}",random_contour,0.0,374.75,145.59160919045667,0.09589705187849973,374.75,0.5,0.0,0.0,0.0,0.48536363636363633,0.5151515151515151,4

@@ -1,0 +1,8 @@
+method,filter_or_defense,hyperparameters,attack_type,lambda,mean_return,std_return,mean_state_estimation_error,mean_final_goal_distance,success_rate,mean_gamma_t,gamma_ge_threshold_rate,mean_effective_inflation,mean_wolf_weight,wolf_strong_discount_rate,zero_pgd_direction_rate,num_runs
+Clean,clean,{},clean,0.0,23.989738510095826,50.706619890927655,0.0,6.495982443168759,0.81,0.0,0.0,0.0,,,0.0,100
+Noisy + KF,kf,{},none,0.0,22.476171192790687,52.106682268755115,0.11782630257853803,6.952109569124877,0.8,0.0,0.0,0.0,,,0.0,100
+"Random contour, no defense",kf,{},random_contour,0.0,20.28924187301038,53.44010124650379,0.2334477467379771,7.5485352357104425,0.78,0.0,0.0,0.0,,,0.0,100
+"Random contour + PGD direction, lambda=1.0",covariance_adaptation,{},random_contour,1.0,20.303517465451737,53.42560542185286,0.2307139021741699,7.545550235398114,0.78,0.0023617510314961117,0.0036663611365719525,0.0023617510314961117,,,0.0,100
+"Random contour + observed direction + WoLF-MD, lambda=1.0",covariance_adaptation_observation_imq,{},random_contour,1.0,21.677154332334172,52.29495907661337,0.18563844986376563,7.036659878082573,0.79,0.018539730043369545,0.029439252336448597,0.018539730043369545,,,0.0,100
+Random contour + WoLF-IMQ,wolf_imq,"{""imq_soft_threshold"": 0.35, ""kind"": ""imq"", ""min_weight"": 1e-06, ""tmd_threshold"": 3.0}",random_contour,0.0,21.693702366063366,52.28478707997591,0.17472780881322234,7.02620372403413,0.79,0.0,0.0,0.0,0.3497725963539599,0.10168697282099344,0.0,100
+Random contour + WoLF-TMD,wolf_tmd,"{""imq_soft_threshold"": 1.0, ""kind"": ""tmd"", ""min_weight"": 1e-06, ""tmd_threshold"": 1.5}",random_contour,0.0,21.704516642310963,52.28125652650393,0.15581908002407063,7.023916067257524,0.79,0.0,0.0,0.0,0.001,0.10187793427230046,0.0,100

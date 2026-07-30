@@ -59,52 +59,35 @@ for import_path in (REPO_ROOT, NONLINEAR_DIR):
 
 try:
     from AdvNonLinearAttack.AttackSense3D import (
-        estimate_E_g,
         g_scalar,
         g_scalar_grad,
         get_system_parameters,
-        kalman_filter_nd,
-        project_to_psd,
-        rts_smoother_nd,
-        simulate_lgssm_nd,
-        white_box_point_attack_nd,
-    )
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from CovarianceAdaptation.covariance_adaptation_utils import (
-        compute_contamination_prior,
-        gaussian_logpdf,
-        log_mix_posterior_weight,
-        rank_one_covariance_update,
-        safe_unit_direction,
-        set_plot_theme,
-        solve_spd,
-        spd_inverse,
-        style_axis,
     )
 except ModuleNotFoundError:
     from AttackSense3D import (
-        estimate_E_g,
         g_scalar,
         g_scalar_grad,
         get_system_parameters,
-        kalman_filter_nd,
-        project_to_psd,
-        rts_smoother_nd,
-        simulate_lgssm_nd,
-        white_box_point_attack_nd,
     )
-    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from covariance_adaptation_utils import (
-        compute_contamination_prior,
-        gaussian_logpdf,
-        log_mix_posterior_weight,
-        rank_one_covariance_update,
-        safe_unit_direction,
-        set_plot_theme,
-        solve_spd,
-        spd_inverse,
-        style_axis,
-    )
+
+from shared_ssm.artifacts import cached_npz
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import figures_dir_for
+from shared_ssm.covariance_experiments import compute_contamination_prior
+from shared_ssm.covariance_experiments import gaussian_logpdf
+from shared_ssm.covariance_experiments import log_mix_posterior_weight
+from shared_ssm.covariance_experiments import rank_one_covariance_update
+from shared_ssm.covariance_experiments import safe_unit_direction
+from shared_ssm.covariance_experiments import set_plot_theme
+from shared_ssm.covariance_experiments import solve_spd
+from shared_ssm.covariance_experiments import spd_inverse
+from shared_ssm.covariance_experiments import style_axis
+from shared_ssm.legacy import estimate_E_g
+from shared_ssm.legacy import kalman_filter_nd_current_observation as kalman_filter_nd
+from shared_ssm.legacy import rts_smoother_nd
+from shared_ssm.legacy import simulate_lgssm_nd_current_observation as simulate_lgssm_nd
+from shared_ssm.legacy import white_box_point_attack_nd
+from shared_ssm.linalg import project_to_psd
 
 
 # ============================================================
@@ -272,6 +255,48 @@ def local_hidden_state_error(
     x_true = np.asarray(x_true, dtype=float)
     m_smooth = np.asarray(m_smooth, dtype=float)
     return float(np.sum(np.abs(x_true[attack_t] - m_smooth[attack_t])))
+
+
+def _as_scalar_objective_value(value: np.ndarray | float) -> float:
+    """Return one scalar objective value from the nonlinear `g` output."""
+    return float(np.asarray(value, dtype=float).reshape(-1)[0])
+
+
+def build_nonlinear_objective_attack_score_builder(
+    *,
+    attack_t: int,
+    clean_state_mean: np.ndarray,
+):
+    """
+    Return the bounded objective expert for the nonlinear `g` attack.
+
+    The objective is evaluated on hidden-state representatives rather than on
+    the observation directly. We compare how far the posterior hidden-state
+    objective has moved away from the clean posterior value, normalized by the
+    attacked-reference movement at the same time step.
+    """
+    clean_state_mean = np.asarray(clean_state_mean, dtype=float).reshape(-1)
+    clean_objective_value = _as_scalar_objective_value(g_scalar(clean_state_mean))
+
+    def objective_attack_score_builder(
+        time_idx: int,
+        observation: np.ndarray,
+        predicted_observation: np.ndarray,
+        target: np.ndarray | None,
+        direction: np.ndarray,
+        observed_state_mean: np.ndarray,
+        target_state_mean: np.ndarray | None,
+        posterior_state_covariance: np.ndarray,
+    ) -> float | None:
+        if int(time_idx) != int(attack_t) or target_state_mean is None:
+            return None
+        observed_value = _as_scalar_objective_value(g_scalar(np.asarray(observed_state_mean, dtype=float).reshape(-1)))
+        target_value = _as_scalar_objective_value(g_scalar(np.asarray(target_state_mean, dtype=float).reshape(-1)))
+        denominator = max(abs(target_value - clean_objective_value), 1e-12)
+        numerator = abs(observed_value - clean_objective_value)
+        return float(np.clip(numerator / denominator, 0.0, 1.0))
+
+    return objective_attack_score_builder
 
 
 def add_lambda_colorbar(
@@ -556,123 +581,6 @@ def evaluate_single_mc_g_run_from_task(
 # ============================================================
 # Covariance-adaptation filter for the 3D nonlinear example
 # ============================================================
-def kalman_filter_with_online_covariance_adaptation_3d(
-    *,
-    y: np.ndarray,
-    u: np.ndarray,
-    A_t: np.ndarray,
-    B_t: np.ndarray,
-    H_t: np.ndarray,
-    D_t: np.ndarray,
-    Q_t: np.ndarray,
-    R_t: np.ndarray,
-    m0: np.ndarray,
-    P0: np.ndarray,
-    attack_targets: dict[int, np.ndarray] | None,
-    lam: float,
-    omega_h: float,
-    omega_o: float,
-    posterior_attack_threshold: float = DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
-    direction_eps: float = 1e-10,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    """
-    Run the online covariance-adaptation defense on the 3D AttackSense model.
-
-    Unlike the earlier AdvSSM helper, this version follows the `u` indexing
-    convention used by `AttackSense3D.py`, where controls have shape `(T+1,n_u)`
-    and the transition from `k` to `k+1` uses `u[k]`.
-
-    In this thresholded variant, the covariance adaptation is activated only
-    when the posterior attack probability `gamma_t` exceeds 0.5.
-    """
-    T = y.shape[0] - 1
-    n_x = P0.shape[0]
-    n_y = y.shape[1]
-    I_x = np.eye(n_x, dtype=float)
-
-    m_pred = np.zeros((T + 1, n_x), dtype=float)
-    P_pred = np.zeros((T + 1, n_x, n_x), dtype=float)
-    m_filt = np.zeros((T + 1, n_x), dtype=float)
-    P_filt = np.zeros((T + 1, n_x, n_x), dtype=float)
-
-    diagnostics = {
-        "pi_t": np.zeros(T + 1, dtype=float),
-        "gamma_t": np.zeros(T + 1, dtype=float),
-        "bar_gamma_t": np.zeros(T + 1, dtype=float),
-        "u_t": np.zeros((T + 1, n_y), dtype=float),
-        "V_tilde_t": np.zeros((T + 1, n_y, n_y), dtype=float),
-    }
-
-    m_pred[0] = np.asarray(m0, dtype=float)
-    P_pred[0] = project_to_psd(np.asarray(P0, dtype=float))
-
-    for k in range(T + 1):
-        Hk = np.asarray(H_t[k], dtype=float)
-        Dk = np.asarray(D_t[k], dtype=float)
-        Rk = project_to_psd(np.asarray(R_t[k], dtype=float))
-
-        y_hat = Hk @ m_pred[k] + Dk @ u[k]
-        S_nom = project_to_psd(Hk @ P_pred[k] @ Hk.T + Rk)
-        innov = y[k] - y_hat
-
-        V_tilde = Rk.copy()
-        S_tilde = S_nom.copy()
-        K_tilde = solve_spd(S_tilde, Hk @ P_pred[k].T).T
-        pi_t = 0.0
-        gamma_t = 0.0
-        bar_gamma_t = 0.0
-        u_dir = np.zeros(n_y, dtype=float)
-
-        if attack_targets is not None and k in attack_targets:
-            adv_target = np.asarray(attack_targets[k], dtype=float).reshape(n_y)
-            delta_adv = adv_target - y_hat
-            u_dir, delta_norm = safe_unit_direction(delta_adv, eps=direction_eps)
-
-            if delta_norm >= direction_eps:
-                pi_t, _, _ = compute_contamination_prior(
-                    delta_adv=delta_adv,
-                    S_t=S_nom,
-                    P_pred_t=P_pred[k],
-                    H_t=Hk,
-                    omega_h=omega_h,
-                    omega_o=omega_o,
-                )
-
-                S_adv = rank_one_covariance_update(S_nom, lam, u_dir)
-                precision_poe = spd_inverse(S_adv) + spd_inverse(Rk)
-                Sigma_poe = spd_inverse(precision_poe)
-                rhs_poe = solve_spd(S_adv, y_hat) + solve_spd(Rk, adv_target)
-                mu_poe = solve_spd(precision_poe, rhs_poe)
-
-                log_p0 = gaussian_logpdf(y[k], y_hat, S_nom)
-                log_p1 = gaussian_logpdf(y[k], mu_poe, Sigma_poe)
-                gamma_t = log_mix_posterior_weight(pi_t, log_p0, log_p1)
-                bar_gamma_t = gamma_t if gamma_t > posterior_attack_threshold else 0.0
-
-                V_tilde = rank_one_covariance_update(Rk, lam, u_dir, weight=bar_gamma_t)
-                S_tilde = rank_one_covariance_update(S_nom, lam, u_dir, weight=bar_gamma_t)
-                K_tilde = solve_spd(S_tilde, Hk @ P_pred[k].T).T
-
-        m_filt[k] = m_pred[k] + K_tilde @ innov
-        joseph_left = I_x - K_tilde @ Hk
-        P_filt[k] = project_to_psd(
-            joseph_left @ P_pred[k] @ joseph_left.T + K_tilde @ V_tilde @ K_tilde.T
-        )
-
-        diagnostics["pi_t"][k] = pi_t
-        diagnostics["gamma_t"][k] = gamma_t
-        diagnostics["bar_gamma_t"][k] = bar_gamma_t
-        diagnostics["u_t"][k] = u_dir
-        diagnostics["V_tilde_t"][k] = V_tilde
-
-        if k < T:
-            Ak = np.asarray(A_t[k], dtype=float)
-            Bk = np.asarray(B_t[k], dtype=float)
-            Qk = project_to_psd(np.asarray(Q_t[k], dtype=float))
-            m_pred[k + 1] = Ak @ m_filt[k] + Bk @ u[k]
-            P_pred[k + 1] = project_to_psd(Ak @ P_filt[k] @ Ak.T + Qk)
-
-    return m_filt, P_filt, m_pred, P_pred, diagnostics
 
 
 # ============================================================
@@ -862,6 +770,10 @@ def evaluate_reference_g_lambda_sweep(
         attack_t=attack_t,
         n_mc_est=n_mc_est,
     )
+    objective_attack_score_builder = build_nonlinear_objective_attack_score_builder(
+        attack_t=attack_t,
+        clean_state_mean=clean_filt[0][attack_t],
+    )
     attack_m_candidate, _, attack_prob_candidate = compute_smoothed_probability(
         m_filt=attack_filt[0],
         P_filt=attack_filt[1],
@@ -899,6 +811,9 @@ def evaluate_reference_g_lambda_sweep(
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
+            delta_threshold=DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         adapt_means[lam_idx], _, adapt_prob[lam_idx] = compute_smoothed_probability(
             m_filt=adapt_filt[0],
@@ -1029,6 +944,10 @@ def evaluate_single_mc_g_run(
         attack_t=attack_t,
         n_mc_est=n_mc_est,
     )
+    objective_attack_score_builder = build_nonlinear_objective_attack_score_builder(
+        attack_t=attack_t,
+        clean_state_mean=clean_filt[0][attack_t],
+    )
     attack_smooth, _, attack_prob_candidate = compute_smoothed_probability(
         m_filt=attack_filt[0],
         P_filt=attack_filt[1],
@@ -1066,6 +985,9 @@ def evaluate_single_mc_g_run(
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
+            delta_threshold=DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         adapt_filt = kalman_filter_with_online_covariance_adaptation_3d(
             y=y_adv,
@@ -1082,6 +1004,9 @@ def evaluate_single_mc_g_run(
             lam=float(lam),
             omega_h=omega_h,
             omega_o=omega_o,
+            delta_threshold=DEFAULT_POSTERIOR_ATTACK_THRESHOLD,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         clean_adapt_smooth, _, clean_adapt_prob[lam_idx] = compute_smoothed_probability(
             m_filt=clean_adapt_filt[0],
@@ -1995,6 +1920,20 @@ def main() -> None:
         outpath=outpath,
     )
     print(f"Saved figure to: {outpath}")
+
+
+import os as _os
+import sys as _sys
+
+# Make `shared_ssm` importable when this legacy script is run directly.
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+
+from shared_ssm.legacy import (
+    kalman_filter_with_online_covariance_adaptation_current_observation
+    as kalman_filter_with_online_covariance_adaptation_3d,
+)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+{
+  "wolf_imq": {
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.35,
+      "tmd_threshold": 3.0,
+      "min_weight": 1e-06
+    }
+  },
+  "wolf_tmd": {
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 1.0,
+      "tmd_threshold": 1.5,
+      "min_weight": 1e-06
+    }
+  },
+  "selection_metric": "maximize attacked mean return; tie-break by lower state error, better noisy return, lower return variability",
+  "coverage": 0.95,
+  "epsilon": 9.487729036781154,
+  "transition_covariance_multiplier": 2.0,
+  "observation_to_transition_ratio": 1.0,
+  "n_tuning_episodes": 1,
+  "n_episodes": 1,
+  "tuning_seeds": [
+    20260727
+  ],
+  "evaluation_seeds": [
+    20260728
+  ]
+}

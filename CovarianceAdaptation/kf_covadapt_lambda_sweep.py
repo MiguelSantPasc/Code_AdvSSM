@@ -49,27 +49,58 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 try:
-    from AdvSSM.KKTOpt import kalman_filter_nd, simulate_lgssm_nd
     from AdvSSM.KKTOpt_tdependent import sample_random_ssm_run_params
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from CovarianceAdaptation.covariance_adaptation_utils import (
-        build_kf_attack,
-        build_reference_setup,
-        kalman_filter_with_online_covariance_adaptation,
-        set_plot_theme,
-        style_axis,
-    )
 except ModuleNotFoundError:
-    from KKTOpt import kalman_filter_nd, simulate_lgssm_nd
     from KKTOpt_tdependent import sample_random_ssm_run_params
-    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from covariance_adaptation_utils import (
-        build_kf_attack,
-        build_reference_setup,
-        kalman_filter_with_online_covariance_adaptation,
-        set_plot_theme,
-        style_axis,
-    )
+
+from shared_ssm.artifacts import cached_npz
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import figures_dir_for
+from shared_ssm.covariance_experiments import build_kf_attack
+from shared_ssm.covariance_experiments import build_reference_setup
+from shared_ssm.covariance_experiments import kalman_filter_with_online_covariance_adaptation
+from shared_ssm.covariance_experiments import set_plot_theme
+from shared_ssm.covariance_experiments import style_axis
+from shared_ssm.legacy import kalman_filter_nd_previous_observation as kalman_filter_nd
+from shared_ssm.legacy import simulate_lgssm_nd_previous_observation as simulate_lgssm_nd
+
+
+def build_linear_objective_attack_score_builder(
+    *,
+    attack_t: int,
+    clean_state_mean: np.ndarray,
+):
+    """
+    Return the bounded objective expert for the linear KKT attack.
+
+    The linear attack maximizes the posterior hidden-state displacement induced
+    by the attacked observation. We therefore measure how much the current
+    posterior mean has moved away from the clean posterior mean, normalized by
+    the attacked-reference displacement at the same time step.
+    """
+    clean_state_mean = np.asarray(clean_state_mean, dtype=float).reshape(-1)
+
+    def objective_attack_score_builder(
+        time_idx: int,
+        observation: np.ndarray,
+        predicted_observation: np.ndarray,
+        target: np.ndarray | None,
+        direction: np.ndarray,
+        observed_state_mean: np.ndarray,
+        target_state_mean: np.ndarray | None,
+        posterior_state_covariance: np.ndarray,
+    ) -> float | None:
+        if int(time_idx) != int(attack_t) or target_state_mean is None:
+            return None
+        observed_gap = float(
+            np.sum((np.asarray(observed_state_mean, dtype=float).reshape(-1) - clean_state_mean) ** 2)
+        )
+        target_gap = float(
+            np.sum((np.asarray(target_state_mean, dtype=float).reshape(-1) - clean_state_mean) ** 2)
+        )
+        return float(np.clip(observed_gap / max(target_gap, 1e-12), 0.0, 1.0))
+
+    return objective_attack_score_builder
 
 
 def parse_lambda_scales(raw_values: str) -> np.ndarray:
@@ -257,6 +288,10 @@ def evaluate_reference_lambda_sweep(
         m0=m0,
         P0=P0,
     )
+    objective_attack_score_builder = build_linear_objective_attack_score_builder(
+        attack_t=attack_t,
+        clean_state_mean=clean_m[attack_t],
+    )
     attack_m, _, _, _ = kalman_filter_nd(
         y=y_adv,
         u=u_controls,
@@ -292,6 +327,8 @@ def evaluate_reference_lambda_sweep(
             omega_h=omega_h,
             omega_o=omega_o,
             delta_threshold=delta_threshold,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         adapt_means[idx] = adapt_m
         pi_values[idx] = float(diagnostics["pi_t"][attack_t])
@@ -410,6 +447,10 @@ def evaluate_single_monte_carlo_run_lambda_sweep(
         m0=params["m0"],
         P0=params["P0"],
     )
+    objective_attack_score_builder = build_linear_objective_attack_score_builder(
+        attack_t=attack_t,
+        clean_state_mean=clean_m[attack_t],
+    )
 
     clean_local = float(np.sum(np.abs(x_true[attack_t] - clean_m[attack_t])))
     clean_global = float(np.sum(np.abs(x_true - clean_m)))
@@ -438,6 +479,8 @@ def evaluate_single_monte_carlo_run_lambda_sweep(
             omega_h=omega_h,
             omega_o=omega_o,
             delta_threshold=delta_threshold,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         adapt_m, _, _, _, _ = kalman_filter_with_online_covariance_adaptation(
             y=y_adv,
@@ -455,6 +498,8 @@ def evaluate_single_monte_carlo_run_lambda_sweep(
             omega_h=omega_h,
             omega_o=omega_o,
             delta_threshold=delta_threshold,
+            objective_attack_score_builder=objective_attack_score_builder,
+            mahalanobis_epsilon=float(epsilon),
         )
         clean_local_by_lambda[idx] = float(np.sum(np.abs(x_true[attack_t] - clean_adapt_m[attack_t])))
         clean_global_by_lambda[idx] = float(np.sum(np.abs(x_true - clean_adapt_m)))

@@ -24,375 +24,27 @@ import matplotlib.pyplot as plt
 # -----------------------------
 # Linear algebra utilities
 # -----------------------------
-def symmetrize(M: np.ndarray) -> np.ndarray:
-    return 0.5 * (M + M.T)
-
-def project_to_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(M)
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(w) @ V.T
-
-def sqrtm_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(M)
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(np.sqrt(w)) @ V.T
-
-def inv_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(M)
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(1.0 / w) @ V.T
 
 
 # -----------------------------
 # Simulator (constant params; you can add drift back if needed)
 # -----------------------------
-def simulate_lgssm_nd(
-    A: np.ndarray,
-    B: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    Q: np.ndarray,
-    R: np.ndarray,
-    T: int,
-    seed: int = 123,
-    x0: np.ndarray | None = None,
-    u_low: float = -0.5,
-    u_high: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    rng = np.random.default_rng(seed)
-
-    A = np.asarray(A, float)
-    B = np.asarray(B, float)
-    H = np.asarray(H, float)
-    D = np.asarray(D, float)
-    Q = project_to_psd(np.asarray(Q, float))
-    R = project_to_psd(np.asarray(R, float))
-
-    n_x = A.shape[0]
-    n_u = B.shape[1]
-    n_y = H.shape[0]
-
-    if x0 is None:
-        x0 = np.zeros(n_x)
-    else:
-        x0 = np.asarray(x0, float)
-
-    u = rng.uniform(u_low, u_high, size=(T, n_u))
-
-    x = np.zeros((T + 1, n_x))
-    y = np.zeros((T + 1, n_y))
-    x[0] = x0
-
-    # y0 uses u0 (if T>0) for consistency with your original
-    if T > 0:
-        y[0] = H @ x[0] + D @ u[0] + rng.multivariate_normal(np.zeros(n_y), R)
-    else:
-        y[0] = H @ x[0] + rng.multivariate_normal(np.zeros(n_y), R)
-
-    for t in range(T):
-        w = rng.multivariate_normal(np.zeros(n_x), Q)
-        v = rng.multivariate_normal(np.zeros(n_y), R)
-        x[t + 1] = A @ x[t] + B @ u[t] + w
-        y[t + 1] = H @ x[t + 1] + D @ u[t] + v
-
-    mats = {"A": A, "B": B, "H": H, "D": D, "Q": Q, "R": R}
-    return x, y, u, mats
 
 
 # -----------------------------
 # KF + RTS (constant params)
 # -----------------------------
-def kalman_filter_nd(
-    *,
-    y: np.ndarray,      # (T+1, n_y)
-    u: np.ndarray,      # (T, n_u)
-    A: np.ndarray,
-    B: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    Q: np.ndarray,
-    R: np.ndarray,
-    m0: np.ndarray,
-    P0: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    T = y.shape[0] - 1
-    n_x = P0.shape[0]
-    I = np.eye(n_x)
-
-    A = np.asarray(A, float)
-    B = np.asarray(B, float)
-    H = np.asarray(H, float)
-    D = np.asarray(D, float)
-    Q = project_to_psd(np.asarray(Q, float))
-    R = project_to_psd(np.asarray(R, float))
-
-    def u_at(k: int) -> np.ndarray:
-        return u[k] if k < T else u[T - 1]
-
-    m_pred = np.zeros((T + 1, n_x))
-    P_pred = np.zeros((T + 1, n_x, n_x))
-    m_filt = np.zeros((T + 1, n_x))
-    P_filt = np.zeros((T + 1, n_x, n_x))
-
-    m_pred[0] = m0
-    P_pred[0] = P0
-
-    for k in range(T + 1):
-        uk = u_at(k)
-        y_hat = H @ m_pred[k] + D @ uk
-        S = H @ P_pred[k] @ H.T + R
-        K = P_pred[k] @ H.T @ np.linalg.inv(S)
-
-        innov = y[k] - y_hat
-        m_filt[k] = m_pred[k] + K @ innov
-        P_filt[k] = (I - K @ H) @ P_pred[k]
-
-        if k < T:
-            m_pred[k + 1] = A @ m_filt[k] + B @ u_at(k + 1)
-            P_pred[k + 1] = A @ P_filt[k] @ A.T + Q
-
-    return m_filt, P_filt, m_pred, P_pred
-
-
-def rts_smoother_nd(
-    *,
-    m_filt: np.ndarray,
-    P_filt: np.ndarray,
-    m_pred: np.ndarray,
-    P_pred: np.ndarray,
-    A: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    T = m_filt.shape[0] - 1
-    m_smooth = np.zeros_like(m_filt)
-    P_smooth = np.zeros_like(P_filt)
-
-    m_smooth[T] = m_filt[T]
-    P_smooth[T] = P_filt[T]
-
-    for k in range(T - 1, -1, -1):
-        Ck = P_filt[k] @ A.T @ np.linalg.inv(P_pred[k + 1])
-        m_smooth[k] = m_filt[k] + Ck @ (m_smooth[k + 1] - m_pred[k + 1])
-        P_smooth[k] = P_filt[k] + Ck @ (P_smooth[k + 1] - P_pred[k + 1]) @ Ck.T
-
-    return m_smooth, P_smooth
 
 
 # -----------------------------
 # LOO (constant params version) returning X_t, mu_t, Sigma_t
 # (kept close to your version; no drift arrays)
 # -----------------------------
-def loo_values_nd_const(
-    *,
-    t: int,
-    y: np.ndarray,      # (T+1, n_y)
-    u: np.ndarray,      # (T, n_u)
-    A: np.ndarray,
-    B: np.ndarray,
-    H: np.ndarray,
-    D: np.ndarray,
-    Q: np.ndarray,
-    R: np.ndarray,
-    P0: np.ndarray,
-    m0: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    T = int(y.shape[0] - 1)
-    if not (0 <= t <= T):
-        raise ValueError("t out of range")
-
-    n_x = P0.shape[0]
-    n_y = y.shape[1]
-    I_x = np.eye(n_x)
-
-    A = np.asarray(A, float)
-    B = np.asarray(B, float)
-    H = np.asarray(H, float)
-    D = np.asarray(D, float)
-    Q = project_to_psd(np.asarray(Q, float))
-    R = project_to_psd(np.asarray(R, float))
-
-    def u_at(k: int) -> np.ndarray:
-        return u[k] if k < T else u[T - 1]
-
-    # ---- KF covariances (for X)
-    P_pred = [None] * (T + 1)
-    P_filt = [None] * (T + 1)
-    K_kf = [None] * (T + 1)
-
-    P_pred[0] = P0.copy()
-    for k in range(T + 1):
-        S = H @ P_pred[k] @ H.T + R
-        K = P_pred[k] @ H.T @ np.linalg.inv(S)
-        P_filt[k] = (I_x - K @ H) @ P_pred[k]
-        K_kf[k] = K
-        if k < T:
-            P_pred[k + 1] = A @ P_filt[k] @ A.T + Q
-
-    # RTS gains
-    J = [np.zeros((n_x, n_x)) for _ in range(T + 1)]
-    for k in range(T):
-        J[k] = P_filt[k] @ A.T @ np.linalg.inv(P_pred[k + 1])
-    J[T] = np.zeros((n_x, n_x))
-
-    def prod_right(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in mats:
-            out = out @ M
-        return out
-
-    def prod_left(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in reversed(mats):
-            out = out @ M
-        return out
-
-    l = T - t
-    total = np.zeros((n_x, n_x))
-    for i in range(l + 1):
-        prodJ = np.eye(n_x) if i == 0 else prod_right([J[t + j] for j in range(i)])
-        if t + i >= T:
-            mid = np.eye(n_x)
-        else:
-            mid = np.eye(n_x) - J[t + i] @ A
-        factors = [((np.eye(n_x) - K_kf[t + j] @ H) @ A) for j in range(i + 1)]
-        prodKH = prod_left(factors)
-        total = total + (prodJ @ mid @ prodKH)
-
-    X_t_out = total @ K_kf[t]  # (n_x, n_y)
-
-    # ---- Forward means with y_t excluded
-    m_pred = [None] * (T + 1)
-    m_filt = [None] * (T + 1)
-    m_pred[0] = m0.copy()
-
-    for k in range(T + 1):
-        if k == t:
-            m_filt[k] = m_pred[k]
-        else:
-            uk = u_at(k)
-            y_hat = H @ m_pred[k] + D @ uk
-            S = H @ P_pred[k] @ H.T + R
-            K = P_pred[k] @ H.T @ np.linalg.inv(S)
-            m_filt[k] = m_pred[k] + K @ (y[k] - y_hat)
-        if k < T:
-            m_pred[k + 1] = A @ m_filt[k] + B @ u_at(k + 1)
-
-    # ---- Backward info messages (exclude measurement at time t)
-    Lambda = [None] * (T + 1)
-    eta = [None] * (T + 1)
-    Lambda[T] = np.zeros((n_x, n_x))
-    eta[T] = np.zeros((n_x,))
-
-    for k in range(T - 1, -1, -1):
-        kp1 = k + 1
-        ukp1 = u_at(kp1)
-
-        if kp1 == t:
-            barLambda = Lambda[kp1]
-            barEta = eta[kp1]
-        else:
-            tilde_y = y[kp1] - D @ ukp1
-            Rinv = np.linalg.inv(R)
-            barLambda = Lambda[kp1] + H.T @ Rinv @ H
-            barEta = eta[kp1] + H.T @ Rinv @ tilde_y
-
-        Qinv = np.linalg.inv(Q)
-        S_back = Qinv + barLambda
-        S_back_inv = np.linalg.inv(S_back)
-
-        core = Qinv - Qinv @ S_back_inv @ Qinv
-        Lambda[k] = A.T @ core @ A
-
-        term1 = A.T @ Qinv @ S_back_inv @ barEta
-        term2 = A.T @ Qinv @ S_back_inv @ barLambda @ (B @ ukp1)
-        eta[k] = term1 - term2
-
-    # ---- Combine at time t to get p(y_t | y_-t)
-    P_t_minus = np.linalg.inv(np.linalg.inv(P_pred[t]) + Lambda[t])
-    m_t_minus = P_t_minus @ (np.linalg.inv(P_pred[t]) @ m_pred[t] + eta[t])
-
-    mu_y = H @ m_t_minus + D @ u_at(t)
-    Sigma_y = H @ P_t_minus @ H.T + R
-
-    return X_t_out, mu_y, project_to_psd(Sigma_y)
 
 
 # -----------------------------
 # KKT / trust-region solver (your version, unchanged)
 # -----------------------------
-def solve_kkt_max_quadratic_over_ellipsoid(
-    *,
-    X: np.ndarray,          # (n_x, n_y)
-    y_t: np.ndarray,        # (n_y,)
-    mu: np.ndarray,         # (n_y,)
-    Sigma: np.ndarray,      # (n_y, n_y), PSD/PD
-    epsilon: float,
-    tol: float = 1e-10,
-    max_iter: int = 200,
-) -> tuple[np.ndarray, float]:
-    if epsilon <= 0:
-        raise ValueError("epsilon must be > 0")
-
-    Sigma = project_to_psd(Sigma)
-    S = sqrtm_psd(Sigma)
-    M = X.T @ X
-
-    d = (mu - y_t).reshape(-1)
-    A = symmetrize(S.T @ M @ S)
-    b = (S.T @ M @ d).reshape(-1)
-
-    a, U = np.linalg.eigh(A)
-    a_max = float(np.max(a))
-    bp = U.T @ b
-
-    if np.linalg.norm(b) < 1e-14:
-        idx = int(np.argmax(a))
-        z_star = np.zeros_like(b)
-        z_star[idx] = np.sqrt(epsilon)
-        z_star = U @ z_star
-    else:
-        def norm2_minus_eps(lam: float) -> float:
-            denom = (a - lam)
-            zi = -bp / denom
-            return float(np.dot(zi, zi) - epsilon)
-
-        lam_low = a_max + 1e-12
-        f_low = norm2_minus_eps(lam_low)
-        if f_low <= 0:
-            lam_low = a_max + 1e-16
-            f_low = norm2_minus_eps(lam_low)
-
-        lam_high = a_max + 1.0
-        f_high = norm2_minus_eps(lam_high)
-        while f_high > 0:
-            lam_high *= 2.0
-            f_high = norm2_minus_eps(lam_high)
-            if lam_high > 1e12:
-                raise RuntimeError("Failed to bracket lambda for KKT root finding.")
-
-        for _ in range(max_iter):
-            lam_mid = 0.5 * (lam_low + lam_high)
-            f_mid = norm2_minus_eps(lam_mid)
-            if abs(f_mid) < tol:
-                lam_low = lam_high = lam_mid
-                break
-            if f_mid > 0:
-                lam_low = lam_mid
-            else:
-                lam_high = lam_mid
-
-        lam_star = 0.5 * (lam_low + lam_high)
-        z_star = U @ (-bp / (a - lam_star))
-
-        nz = np.linalg.norm(z_star)
-        if nz > 0:
-            z_star = z_star * (np.sqrt(epsilon) / nz)
-
-    y_star = mu + S @ z_star
-    obj_star = float(np.linalg.norm(X @ (y_star - y_t)) ** 2)
-    return y_star, obj_star
 
 
 # -----------------------------
@@ -923,6 +575,25 @@ def main() -> None:
 
 
     print(f"Saved figure: {outpath}")
+
+import os as _os
+import sys as _sys
+
+# Make `shared_ssm` importable when this legacy script is run directly.
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+
+from shared_ssm.linalg import project_to_psd
+from shared_ssm.linalg import spd_inverse as inv_psd
+from shared_ssm.linalg import sqrtm_psd
+from shared_ssm.linalg import symmetrize
+from shared_ssm.legacy import kalman_filter_nd_const as kalman_filter_nd
+from shared_ssm.legacy import loo_values_nd_const
+from shared_ssm.legacy import rts_smoother_nd_const as rts_smoother_nd
+from shared_ssm.legacy import simulate_lgssm_nd_const as simulate_lgssm_nd
+from shared_ssm.legacy import solve_kkt_max_quadratic_over_ellipsoid
+
 
 if __name__ == "__main__":
     main()

@@ -18,382 +18,18 @@ The figure shows, for several epsilon values:
 from __future__ import annotations
 
 import os
+import sys
 from matplotlib.lines import Line2D
 import numpy as np
 import matplotlib.pyplot as plt
 
-try:
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-except ModuleNotFoundError:
-    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-
-
-# ============================================================
-# PSD / linear algebra helpers
-# ============================================================
-def symmetrize(M: np.ndarray) -> np.ndarray:
-    return 0.5 * (M + M.T)
-
-
-def project_to_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(np.asarray(M, dtype=float))
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(w) @ V.T
-
-
-def sqrtm_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(np.asarray(M, dtype=float))
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(np.sqrt(w)) @ V.T
-
-
-def inv_psd(M: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    M = symmetrize(np.asarray(M, dtype=float))
-    w, V = np.linalg.eigh(M)
-    w = np.maximum(w, eps)
-    return V @ np.diag(1.0 / w) @ V.T
-
-
-# ============================================================
-# ND LGSSM simulator with optional linear drift
-# ============================================================
-def simulate_lgssm_nd(
-    A0: np.ndarray,
-    B0: np.ndarray,
-    H0: np.ndarray,
-    D0: np.ndarray,
-    T: int,
-    seed: int = 123,
-    x0: np.ndarray | None = None,
-    Q0: np.ndarray | None = None,
-    R0: np.ndarray | None = None,
-    dA: np.ndarray | None = None,
-    dB: np.ndarray | None = None,
-    dH: np.ndarray | None = None,
-    dD: np.ndarray | None = None,
-    dQ: np.ndarray | None = None,
-    dR: np.ndarray | None = None,
-    u_low: float = -0.5,
-    u_high: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    """
-    Simulate a multidimensional LGSSM using the notation
-
-        s_{t+1} = A_t s_t + B_t u_t + w_{t+1}
-        o_t     = H_t s_t + D_t u_t + v_t
-
-    even though the internal arrays keep the conventional `x` and `y` names.
-    """
-    if T < 0:
-        raise ValueError("T must be >= 0")
-
-    rng = np.random.default_rng(seed)
-
-    A0 = np.asarray(A0, dtype=float)
-    B0 = np.asarray(B0, dtype=float)
-    H0 = np.asarray(H0, dtype=float)
-    D0 = np.asarray(D0, dtype=float)
-
-    n_x = A0.shape[0]
-    n_u = B0.shape[1]
-    n_y = H0.shape[0]
-
-    if x0 is None:
-        x0 = np.zeros(n_x, dtype=float)
-    else:
-        x0 = np.asarray(x0, dtype=float)
-        if x0.shape != (n_x,):
-            raise ValueError("x0 must be (n_x,)")
-
-    if Q0 is None:
-        Q0 = 0.02 * np.eye(n_x, dtype=float)
-    else:
-        Q0 = np.asarray(Q0, dtype=float)
-
-    if R0 is None:
-        R0 = 0.03 * np.eye(n_y, dtype=float)
-    else:
-        R0 = np.asarray(R0, dtype=float)
-
-    Q0 = project_to_psd(Q0)
-    R0 = project_to_psd(R0)
-
-    dA = np.zeros_like(A0) if dA is None else np.asarray(dA, dtype=float)
-    dB = np.zeros_like(B0) if dB is None else np.asarray(dB, dtype=float)
-    dH = np.zeros_like(H0) if dH is None else np.asarray(dH, dtype=float)
-    dD = np.zeros_like(D0) if dD is None else np.asarray(dD, dtype=float)
-    dQ = np.zeros_like(Q0) if dQ is None else np.asarray(dQ, dtype=float)
-    dR = np.zeros_like(R0) if dR is None else np.asarray(dR, dtype=float)
-
-    A_t = np.zeros((T + 1, n_x, n_x), dtype=float)
-    B_t = np.zeros((T + 1, n_x, n_u), dtype=float)
-    H_t = np.zeros((T + 1, n_y, n_x), dtype=float)
-    D_t = np.zeros((T + 1, n_y, n_u), dtype=float)
-    Q_t = np.zeros((T + 1, n_x, n_x), dtype=float)
-    R_t = np.zeros((T + 1, n_y, n_y), dtype=float)
-
-    for t in range(T + 1):
-        A_t[t] = A0 + dA * t
-        B_t[t] = B0 + dB * t
-        H_t[t] = H0 + dH * t
-        D_t[t] = D0 + dD * t
-        Q_t[t] = project_to_psd(Q0 + dQ * t)
-        R_t[t] = project_to_psd(R0 + dR * t)
-
-    u = rng.uniform(u_low, u_high, size=(T, n_u))
-
-    x = np.zeros((T + 1, n_x), dtype=float)
-    y = np.zeros((T + 1, n_y), dtype=float)
-    x[0] = x0
-
-    if T > 0:
-        y[0] = H_t[0] @ x[0] + D_t[0] @ u[0] + rng.multivariate_normal(np.zeros(n_y), R_t[0])
-    else:
-        y[0] = H_t[0] @ x[0] + rng.multivariate_normal(np.zeros(n_y), R_t[0])
-
-    for t in range(T):
-        w_next = rng.multivariate_normal(np.zeros(n_x), Q_t[t])
-        v_next = rng.multivariate_normal(np.zeros(n_y), R_t[t + 1])
-        x[t + 1] = A_t[t] @ x[t] + B_t[t] @ u[t] + w_next
-        y[t + 1] = H_t[t + 1] @ x[t + 1] + D_t[t + 1] @ u[t] + v_next
-
-    mats = {"A_t": A_t, "B_t": B_t, "H_t": H_t, "D_t": D_t, "Q_t": Q_t, "R_t": R_t}
-    return x, y, u, mats
-
-
-# ============================================================
-# Leave-one-out p(o_t | o_-t) + X_t
-# ============================================================
-def loo_values_nd(
-    *,
-    t: int,
-    y: np.ndarray,
-    u: np.ndarray,
-    A_t: np.ndarray,
-    B_t: np.ndarray,
-    H_t: np.ndarray,
-    D_t: np.ndarray,
-    Q_t: np.ndarray,
-    R_t: np.ndarray,
-    P0: np.ndarray,
-    m0: np.ndarray,
-) -> list[np.ndarray]:
-    """
-    Compute:
-    - X_t: sensitivity from an observation-space perturbation at time t to the
-      corresponding smoothed hidden-state perturbation,
-    - \hat{o}_t = E[o_t | o_{-t}],
-    - Sigma_t = Cov[o_t | o_{-t}].
-    """
-    T = int(y.shape[0] - 1)
-    if not (0 <= t <= T):
-        raise ValueError("t out of range")
-
-    n_x = P0.shape[0]
-    I_x = np.eye(n_x)
-
-    def u_at(k: int) -> np.ndarray:
-        return u[k] if k < T else u[T - 1]
-
-    P_pred = [None] * (T + 1)
-    P_filt = [None] * (T + 1)
-    K_kf = [None] * (T + 1)
-
-    P_pred[0] = P0.copy()
-
-    for k in range(T + 1):
-        Hk = H_t[k]
-        Rk = project_to_psd(R_t[k])
-
-        S = Hk @ P_pred[k] @ Hk.T + Rk
-        K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
-
-        P_filt[k] = (I_x - K @ Hk) @ P_pred[k]
-        K_kf[k] = K
-
-        if k < T:
-            Ak = A_t[k]
-            Qk = project_to_psd(Q_t[k])
-            P_pred[k + 1] = Ak @ P_filt[k] @ Ak.T + Qk
-
-    J = [np.zeros((n_x, n_x)) for _ in range(T + 1)]
-    for k in range(T):
-        Ak = A_t[k]
-        J[k] = P_filt[k] @ Ak.T @ np.linalg.inv(P_pred[k + 1])
-
-    def prod_right(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in mats:
-            out = out @ M
-        return out
-
-    def prod_left(mats: list[np.ndarray]) -> np.ndarray:
-        out = np.eye(n_x)
-        for M in reversed(mats):
-            out = out @ M
-        return out
-
-    l = T - t
-    total = np.zeros((n_x, n_x))
-    for i in range(l + 1):
-        prodJ = np.eye(n_x) if i == 0 else prod_right([J[t + j] for j in range(i)])
-
-        if t + i >= T:
-            mid = np.eye(n_x)
-        else:
-            mid = np.eye(n_x) - J[t + i] @ A_t[t + i + 1]
-
-        factors = [((np.eye(n_x) - K_kf[t + j] @ H_t[t + j]) @ A_t[t + j]) for j in range(i + 1)]
-        prodKH = prod_left(factors)
-
-        total = total + (prodJ @ mid @ prodKH)
-
-    X_t_out = total @ K_kf[t]
-
-    m_pred = [None] * (T + 1)
-    m_filt = [None] * (T + 1)
-    m_pred[0] = m0.copy()
-
-    for k in range(T + 1):
-        if k == t:
-            m_filt[k] = m_pred[k]
-        else:
-            Hk = H_t[k]
-            Dk = D_t[k]
-            Rk = project_to_psd(R_t[k])
-            uk = u_at(k)
-
-            o_hat = Hk @ m_pred[k] + Dk @ uk
-            S = Hk @ P_pred[k] @ Hk.T + Rk
-            K = P_pred[k] @ Hk.T @ np.linalg.inv(S)
-
-            m_filt[k] = m_pred[k] + K @ (y[k] - o_hat)
-
-        if k < T:
-            Ak = A_t[k]
-            Bk = B_t[k]
-            m_pred[k + 1] = Ak @ m_filt[k] + Bk @ u_at(k + 1)
-
-    Lambda = [None] * (T + 1)
-    eta = [None] * (T + 1)
-    Lambda[T] = np.zeros((n_x, n_x))
-    eta[T] = np.zeros((n_x,))
-
-    for k in range(T - 1, -1, -1):
-        kp1 = k + 1
-
-        Akp1 = A_t[kp1]
-        Bkp1 = B_t[kp1]
-        Qkp1 = project_to_psd(Q_t[kp1])
-        Hkp1 = H_t[kp1]
-        Dkp1 = D_t[kp1]
-        Rkp1 = project_to_psd(R_t[kp1])
-        ukp1 = u_at(kp1)
-
-        if kp1 == t:
-            barLambda = Lambda[kp1]
-            barEta = eta[kp1]
-        else:
-            tilde_y = y[kp1] - Dkp1 @ ukp1
-            Rinv = np.linalg.inv(Rkp1)
-            barLambda = Lambda[kp1] + Hkp1.T @ Rinv @ Hkp1
-            barEta = eta[kp1] + Hkp1.T @ Rinv @ tilde_y
-
-        Qinv = np.linalg.inv(Qkp1)
-        S_back = Qinv + barLambda
-        S_back_inv = np.linalg.inv(S_back)
-
-        core = Qinv - Qinv @ S_back_inv @ Qinv
-        Lambda[k] = Akp1.T @ core @ Akp1
-
-        term1 = Akp1.T @ Qinv @ S_back_inv @ barEta
-        term2 = Akp1.T @ Qinv @ S_back_inv @ barLambda @ (Bkp1 @ ukp1)
-        eta[k] = term1 - term2
-
-    P_t_minus = np.linalg.inv(np.linalg.inv(P_pred[t]) + Lambda[t])
-    m_t_minus = P_t_minus @ (np.linalg.inv(P_pred[t]) @ m_pred[t] + eta[t])
-
-    o_hat_t = H_t[t] @ m_t_minus + D_t[t] @ u_at(t)
-    Sigma_t = H_t[t] @ P_t_minus @ H_t[t].T + project_to_psd(R_t[t])
-
-    return [X_t_out, o_hat_t, Sigma_t]
-
-
-# ============================================================
-# KKT solver
-# ============================================================
-def solve_kkt_max_quadratic_over_ellipsoid(
-    *,
-    X: np.ndarray,
-    o_t: np.ndarray,
-    o_hat_t: np.ndarray,
-    Sigma: np.ndarray,
-    epsilon: float,
-    tol: float = 1e-12,
-    max_iter: int = 250,
-) -> tuple[np.ndarray, float]:
-    """
-    Maximise the quadratic objective induced by perturbations measured relative
-    to o_t, under the ellipsoidal constraint centred at \hat{o}_t.
-    """
-    if epsilon <= 0:
-        raise ValueError("epsilon must be > 0")
-
-    Sigma = project_to_psd(Sigma)
-    S = sqrtm_psd(Sigma)
-    M = project_to_psd(symmetrize(X.T @ X))
-    d = (o_hat_t - o_t).reshape(-1)
-
-    A = symmetrize(S.T @ M @ S)
-    b = (S.T @ M @ d).reshape(-1)
-
-    a, U = np.linalg.eigh(A)
-    a_max = float(np.max(a))
-    bp = U.T @ b
-
-    if np.linalg.norm(b) < 1e-14:
-        idx = int(np.argmax(a))
-        zp = np.zeros_like(bp)
-        zp[idx] = np.sqrt(epsilon)
-        z = U @ zp
-    else:
-        def g(lam: float) -> float:
-            denom = (a - lam)
-            zi = -bp / denom
-            return float(np.dot(zi, zi) - epsilon)
-
-        lam_low = a_max + 1e-12
-        lam_high = a_max + 1.0
-
-        while g(lam_high) > 0:
-            lam_high *= 2.0
-            if lam_high > 1e14:
-                raise RuntimeError("Failed to bracket lambda in KKT solve.")
-
-        for _ in range(max_iter):
-            lam_mid = 0.5 * (lam_low + lam_high)
-            f_mid = g(lam_mid)
-            if abs(f_mid) < tol:
-                lam_low = lam_high = lam_mid
-                break
-            if f_mid > 0:
-                lam_low = lam_mid
-            else:
-                lam_high = lam_mid
-
-        lam_star = 0.5 * (lam_low + lam_high)
-        zp = -bp / (a - lam_star)
-        z = U @ zp
-
-        nz = np.linalg.norm(z)
-        if nz > 0:
-            z = z * (np.sqrt(epsilon) / nz)
-
-    o_star = o_hat_t + S @ z
-    obj_star = float(np.linalg.norm(X @ (o_star - o_t)) ** 2)
-    return o_star, obj_star
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from shared_ssm.artifacts import cached_npz
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import figures_dir_for
 
 
 # ============================================================
@@ -777,6 +413,23 @@ def main() -> None:
     )
 
     print(f"\nSaved figure to: {outpath}")
+
+
+import os as _os
+import sys as _sys
+
+# Make `shared_ssm` importable when this legacy script is run directly.
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+
+from shared_ssm.linalg import project_to_psd
+from shared_ssm.linalg import spd_inverse as inv_psd
+from shared_ssm.linalg import sqrtm_psd
+from shared_ssm.linalg import symmetrize
+from shared_ssm.legacy import loo_values_nd_previous_observation as loo_values_nd
+from shared_ssm.legacy import simulate_lgssm_nd_previous_observation as simulate_lgssm_nd
+from shared_ssm.legacy import solve_kkt_max_quadratic_over_ellipsoid
 
 
 if __name__ == "__main__":

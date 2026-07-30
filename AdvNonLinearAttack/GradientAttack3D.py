@@ -19,48 +19,31 @@ The 3D state-space panel is intentionally omitted so the layout stays compact.
 from __future__ import annotations
 
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-try:
-    from AttackSense3D import get_system_parameters, g_scalar, g_scalar_grad
-    from GradientAttack import (
-        data_path_for_plot,
-        estimate_E_g,
-        inv_psd,
-        kalman_filter_nd,
-        load_npz,
-        project_to_psd,
-        rts_smoother_nd,
-        save_npz,
-        simulate_lgssm_nd,
-        symmetrize,
-        white_box_point_attack_nd,
-    )
-except ModuleNotFoundError:
-    import sys
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+for _path in (_THIS_DIR, _PROJECT_ROOT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-    _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-    _PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
-    for _path in (_THIS_DIR, _PROJECT_ROOT):
-        if _path not in sys.path:
-            sys.path.insert(0, _path)
-
-    from AttackSense3D import get_system_parameters, g_scalar, g_scalar_grad
-    from GradientAttack import (
-        data_path_for_plot,
-        estimate_E_g,
-        inv_psd,
-        kalman_filter_nd,
-        load_npz,
-        project_to_psd,
-        rts_smoother_nd,
-        save_npz,
-        simulate_lgssm_nd,
-        symmetrize,
-        white_box_point_attack_nd,
-    )
+from AttackSense3D import get_system_parameters
+from AttackSense3D import g_scalar
+from AttackSense3D import g_scalar_grad
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import load_npz
+from shared_ssm.artifacts import save_npz
+from shared_ssm.legacy import estimate_E_g
+from shared_ssm.legacy import kalman_filter_nd_current_observation as kalman_filter_nd
+from shared_ssm.legacy import rts_smoother_nd
+from shared_ssm.legacy import simulate_lgssm_nd_current_observation as simulate_lgssm_nd
+from shared_ssm.legacy import white_box_point_attack_nd
+from shared_ssm.linalg import project_to_psd
+from shared_ssm.linalg import spd_inverse as inv_psd
+from shared_ssm.linalg import symmetrize
 
 
 # ============================================================

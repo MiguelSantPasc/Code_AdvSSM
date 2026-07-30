@@ -96,32 +96,18 @@ REPO_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-try:
-    from AdvSSM.io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from CovarianceAdaptation.covariance_adaptation_utils import (
-        compute_contamination_prior,
-        gaussian_logpdf,
-        log_mix_posterior_weight,
-        rank_one_covariance_update,
-        safe_unit_direction,
-        set_plot_theme,
-        solve_spd,
-        spd_inverse,
-        style_axis,
-    )
-except ModuleNotFoundError:
-    from io_utils import cached_npz, data_path_for_plot, figures_dir_for
-    from covariance_adaptation_utils import (
-        compute_contamination_prior,
-        gaussian_logpdf,
-        log_mix_posterior_weight,
-        rank_one_covariance_update,
-        safe_unit_direction,
-        set_plot_theme,
-        solve_spd,
-        spd_inverse,
-        style_axis,
-    )
+from shared_ssm.artifacts import cached_npz
+from shared_ssm.artifacts import data_path_for_plot
+from shared_ssm.artifacts import figures_dir_for
+from shared_ssm.covariance_experiments import compute_contamination_prior
+from shared_ssm.covariance_experiments import gaussian_logpdf
+from shared_ssm.covariance_experiments import log_mix_posterior_weight
+from shared_ssm.covariance_experiments import rank_one_covariance_update
+from shared_ssm.covariance_experiments import safe_unit_direction
+from shared_ssm.covariance_experiments import set_plot_theme
+from shared_ssm.covariance_experiments import solve_spd
+from shared_ssm.covariance_experiments import spd_inverse
+from shared_ssm.covariance_experiments import style_axis
 
 
 DEFAULT_GYMNASIUM_DISCOUNT_DELTA = 0.94
@@ -140,28 +126,6 @@ def darken_hex(hex_color: str, factor: float = 0.88) -> tuple[float, float, floa
     raw = hex_color.lstrip("#")
     rgb = tuple(int(raw[idx : idx + 2], 16) / 255.0 for idx in (0, 2, 4))
     return tuple(max(0.0, min(1.0, factor * channel)) for channel in rgb)
-
-
-def symmetrize(matrix: np.ndarray) -> np.ndarray:
-    """Return the symmetric part of a square matrix."""
-    matrix = np.asarray(matrix, dtype=float)
-    return 0.5 * (matrix + matrix.T)
-
-
-def project_to_psd(matrix: np.ndarray, eps: float = 1e-10) -> np.ndarray:
-    """Project a symmetric matrix onto the PSD cone."""
-    matrix = symmetrize(np.asarray(matrix, dtype=float))
-    eigvals, eigvecs = np.linalg.eigh(matrix)
-    eigvals = np.maximum(eigvals, eps)
-    return (eigvecs @ np.diag(eigvals) @ eigvecs.T).astype(np.float32)
-
-
-def sqrtm_psd(matrix: np.ndarray, eps: float = 1e-10) -> np.ndarray:
-    """Return the PSD square root of a covariance matrix."""
-    matrix = symmetrize(np.asarray(matrix, dtype=float))
-    eigvals, eigvecs = np.linalg.eigh(matrix)
-    eigvals = np.maximum(eigvals, eps)
-    return (eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T).astype(np.float32)
 
 
 def mahalanobis_radius_sq(
@@ -684,9 +648,9 @@ def covariance_adapted_kf_update_state(
             lambda_t = float(c_scale) * float(np.max(np.linalg.eigvalsh(S_nom)))
             pi_t, _, _ = compute_contamination_prior(
                 delta_adv=delta_adv,
-                S_t=S_nom,
-                P_pred_t=P_pred,
-                H_t=I4,
+                predictive_observation_covariance=S_nom,
+                predictive_state_covariance=P_pred,
+                observation_matrix=I4,
                 omega_h=omega_h,
                 omega_o=omega_o,
             )
@@ -855,33 +819,6 @@ def sample_random_attack_in_ellipsoid(
         Sigma=Sigma,
         epsilon=epsilon,
     )
-
-
-def project_to_attack_region(
-    *,
-    y_candidate: np.ndarray,
-    center: np.ndarray,
-    Sigma: np.ndarray,
-    epsilon: float,
-) -> np.ndarray:
-    """
-    Project one observation onto the attack ellipsoid.
-
-    The attack set is:
-        { y : (y-center)^T Sigma^{-1} (y-center) <= epsilon }.
-    """
-    y_candidate = np.asarray(y_candidate, dtype=float).reshape(-1)
-    center = np.asarray(center, dtype=float).reshape(-1)
-    Sigma = project_to_psd(np.asarray(Sigma, dtype=float))
-
-    Sigma_inv = np.linalg.inv(Sigma.astype(np.float64))
-    delta = y_candidate - center
-    maha = float(delta.T @ Sigma_inv @ delta)
-    if maha <= float(epsilon):
-        return y_candidate.astype(np.float32)
-
-    scale = np.sqrt(float(epsilon) / max(maha, 1e-12))
-    return (center + scale * delta).astype(np.float32)
 
 
 def expected_critic_value_mc(
@@ -2264,6 +2201,20 @@ def main() -> None:
         outpath=outpath,
     )
     print(f"Saved figure to: {outpath}")
+
+
+import os as _os
+import sys as _sys
+
+# Make `shared_ssm` importable when this legacy script is run directly.
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+
+from shared_ssm.linalg import project_to_psd
+from shared_ssm.linalg import sqrtm_psd
+from shared_ssm.linalg import symmetrize
+from shared_ssm.legacy import project_to_attack_region_named as project_to_attack_region
 
 
 if __name__ == "__main__":

@@ -1,0 +1,149 @@
+method,episode_seed,step_index,attacked,attack_type,filter_type,gamma_t,gamma_bar_t,effective_inflation,risk_expert,observation_expert,state_estimation_error,goal_distance,pgd_perturbation_norm,random_contour_perturbation_norm,pgd_direction_norm,used_zero_pgd_direction,wolf_weight,wolf_weight_squared,wolf_heavily_discounted
+Clean,20260728,0,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,1,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,4.268808668738754,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,2,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,3.366781410814039,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,3,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,2.5033106899433153,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,4,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,1.5284295181735252,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,5,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,1.5298986062236064,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,6,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,0.9075289465994607,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,7,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,0.7829419974755669,0.0,0.0,0.0,False,1.0,1.0,False
+Clean,20260728,8,False,clean,clean,0.0,0.0,0.0,0.0,0.0,0.0,0.8987006610758694,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,0,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,1,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,2,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,3,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,4,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,5,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,6,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,7,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.130560201060866,0.8691562021548148,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,8,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.06434862234405164,0.9399189896426714,0.0,0.0,0.0,False,1.0,1.0,False
+Noisy + KF,20260728,9,False,none,kf,0.0,0.0,0.0,0.0,0.0,0.07729665183598625,0.6802720185478223,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,0,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,1,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,2,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,3,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,4,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,5,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,6,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,7,True,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.14185771301617564,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,8,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.06704108478888025,0.9656343551584805,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated, no defense",20260728,9,False,pgd_estimated,kf,0.0,0.0,0.0,0.0,0.0,0.07832443261028033,0.7001796839940557,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,0,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,1,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,2,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,3,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,4,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,5,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,6,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,7,True,pgd_estimated,covariance_adaptation_observation_imq,0.7789458629066144,0.7789458629066144,0.3894729314533072,0.9723723139495422,0.48784191108778074,0.3298638737308648,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,8,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.08046962862059731,0.9056738031849038,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=0.5",20260728,9,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06840896511490686,0.7866214440207261,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,0,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,1,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,2,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,3,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,4,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,5,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,6,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,7,True,pgd_estimated,covariance_adaptation_observation_imq,0.7789458629066144,0.7789458629066144,0.7789458629066144,0.9723723139495422,0.48784191108778074,0.3496125800673591,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,8,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.0822064698807846,0.9027055127171435,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=1.0",20260728,9,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06799771598008392,0.8021788456370547,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,0,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,1,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,2,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,3,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,4,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,5,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,6,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,7,True,pgd_estimated,covariance_adaptation_observation_imq,0.7789458629066144,0.7789458629066144,1.5578917258132288,0.9723723139495422,0.48784191108778074,0.36110003676688296,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,8,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.0831857944243764,0.9015521585398084,0.0,0.0,0.0,False,1.0,1.0,False
+"PGD estimated + CovAdap, lambda=2.0",20260728,9,False,pgd_estimated,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06778151567206614,0.8114988384063737,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,0,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,1,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,2,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,3,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,4,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,5,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,6,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,7,True,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.9260025330779181,0.8691562021548148,0.0,1.1673873344487042,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,8,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.34208969970538855,1.7490261936007239,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,9,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.1349504195740753,1.3139148337242612,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,10,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.1323704532055955,1.1049242745338415,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,11,True,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.6820645040199533,0.6839804343484726,0.0,0.9981884752810728,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,12,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.30631763551854774,1.656663234170469,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,13,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.14875311052968768,1.3811881398868218,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour, no defense",20260728,14,False,random_contour,kf,0.0,0.0,0.0,0.0,0.0,0.04999661402154283,0.7435880985367515,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,0,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,1,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,2,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,3,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,4,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,5,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,6,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,7,True,random_contour,covariance_adaptation_observation_imq,0.7428361909158019,0.7428361909158019,0.37141809545790094,0.9723723139495422,0.008704940736940874,0.4545883909938671,0.8691562021548148,0.030983585465648236,1.1673873344487042,0.3568311108479903,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,8,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11404802597837117,1.1778632539652651,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,9,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06415604360442002,0.8964715637656653,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=0.5",20260728,10,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11175988998335601,0.7752972224038447,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,0,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,1,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,2,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,3,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,4,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,5,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,6,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,7,True,random_contour,covariance_adaptation_observation_imq,0.7428361909158019,0.7428361909158019,0.7428361909158019,0.9723723139495422,0.008704940736940874,0.41318108847302415,0.8691562021548148,0.030983585465648236,1.1673873344487042,0.3568311108479903,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,8,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.10407739016422328,1.057320216391127,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,9,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06119023314795356,0.8306736177563797,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=1.0",20260728,10,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11053333408133315,0.7120085385079158,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,0,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,1,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,2,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,3,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,4,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,5,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,6,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,7,True,random_contour,covariance_adaptation_observation_imq,0.7428361909158019,0.7428361909158019,1.4856723818316038,0.9723723139495422,0.008704940736940874,0.3926107289423029,0.8691562021548148,0.030983585465648236,1.1673873344487042,0.3568311108479903,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,8,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.09951182040153213,0.9833905337474858,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,9,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.05973529267999358,0.7920830720143711,0.0,0.0,0.0,False,1.0,1.0,False
+"Random contour + CovAdap, lambda=2.0",20260728,10,False,random_contour,covariance_adaptation_observation_imq,0.0,0.0,0.0,0.0,0.0,0.10986532193091907,0.6738499231334817,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,0,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,1,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,2,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,3,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,4,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,5,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,6,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,7,True,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.19771857819194621,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,0.7002403053496141,0.4903364852361209,False
+PGD estimated + WoLF-IMQ,20260728,8,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06081452033573535,0.9414233448458031,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-IMQ,20260728,9,False,pgd_estimated,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06996223907153594,0.6925207198315961,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,0,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,1,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,2,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,3,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,4,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,5,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,6,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,7,True,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.50669848678957,0.8691562021548148,0.0,1.1673873344487042,0.0,False,0.32714424907744205,0.10702335970444345,True
+Random contour + WoLF-IMQ,20260728,8,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.10977510789253378,1.262130024219978,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,9,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.06524178769104974,0.9635519011401339,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-IMQ,20260728,10,False,random_contour,wolf_imq,0.0,0.0,0.0,0.0,0.0,0.11255274467497733,0.8170283423951075,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,0,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,1,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,2,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,3,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,4,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,5,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,6,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,7,True,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.14185771301617556,0.8691562021548148,0.030983585465648236,0.0,0.3568311108479903,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,8,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06704108478888055,0.9656343551584805,0.0,0.0,0.0,False,1.0,1.0,False
+PGD estimated + WoLF-TMD,20260728,9,False,pgd_estimated,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.07832443261028012,0.7001796839940557,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,0,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06437251922429131,4.726241314490213,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,1,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06474208975105965,4.289817493656428,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,2,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.12584772827379637,3.3770669881090654,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,3,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.07868208078591013,2.491300332718489,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,4,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.27485640041914755,1.508604432550843,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,5,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.11980743116259669,1.5179564089433797,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,6,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.1711631001538921,0.913521065778763,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,7,True,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.3739098785648621,0.8691562021548148,0.0,1.1673873344487042,0.0,False,0.001,1e-06,True
+Random contour + WoLF-TMD,20260728,8,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.06939526848603356,0.90081631777695,0.0,0.0,0.0,False,1.0,1.0,False
+Random contour + WoLF-TMD,20260728,9,False,random_contour,wolf_tmd,0.0,0.0,0.0,0.0,0.0,0.059778536805441165,0.7821191555708857,0.0,0.0,0.0,False,1.0,1.0,False
