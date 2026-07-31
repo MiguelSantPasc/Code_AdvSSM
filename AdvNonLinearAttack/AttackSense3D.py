@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import Normalize
 from scipy.stats import gaussian_kde
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
@@ -49,6 +50,29 @@ N_MC_EST = 2000
 # Output
 FIGURES_DIRNAME = os.path.join("outputs", "figures")
 DATA_DIRNAME = os.path.join("outputs", "data")
+
+
+def get_soft_cividis(*, maxval: float = 0.82) -> LinearSegmentedColormap:
+    """
+    Return a slightly muted cividis that fades into a soft orange.
+
+    The upper end of cividis is a bright yellow, which can look too harsh in
+    this figure. We truncate the last part and gently blend the highest values
+    into a muted orange, preserving the existing alpha settings.
+    """
+    base_cmap = plt.get_cmap("cividis")
+    colors = base_cmap(np.linspace(0.0, maxval, 256))
+
+    # Warm the top end of the colormap so the highlights lean orange instead
+    # of bright yellow.
+    orange_rgba = np.array([0.90, 0.55, 0.22, 1.0], dtype=float)
+    blend_start = 190
+
+    for idx in range(blend_start, len(colors)):
+        weight = (idx - blend_start) / (len(colors) - blend_start - 1)
+        colors[idx] = (1.0 - weight) * colors[idx] + weight * orange_rgba
+
+    return LinearSegmentedColormap.from_list("soft_cividis", colors)
 
 
 # ============================================================
@@ -429,7 +453,7 @@ def plot_delta_density_pairwise(
         last_im = im
 
         # optional point overlay
-        ax.scatter(x, y, s=scatter_size, alpha=0.35, edgecolors="none")
+        ax.scatter(x, y, s=scatter_size, alpha=0.25, edgecolors="none")
 
         # mark origin
         ax.scatter(0.0, 0.0, marker="x", s=80, linewidths=2.0, color="white")
@@ -555,7 +579,79 @@ def plot_delta_density_3d(
         proj_density_hi = proj_density_lo + 1e-12
 
     proj_norm = Normalize(vmin=proj_density_lo, vmax=proj_density_hi, clip=True)
-    cmap = plt.get_cmap("cividis")
+    cmap = get_soft_cividis()
+    projected_density_alpha = 0.42
+    contour_levels = np.linspace(
+        np.percentile(np.concatenate([D_xy.ravel(), D_xz.ravel(), D_yz.ravel()]), 62.0),
+        proj_density_hi,
+        5,
+    )
+    contour_levels = contour_levels[np.isfinite(contour_levels)]
+    contour_levels = np.unique(contour_levels)
+    contour_color = "#4E443B"
+    contour_alpha = 0.52
+    contour_lw = 0.8
+
+    def draw_projected_contours(
+        grid_u: np.ndarray,
+        grid_v: np.ndarray,
+        density_grid: np.ndarray,
+        *,
+        plane: str,
+        offset: float,
+    ) -> None:
+        """
+        Draw 2D KDE contour lines projected exactly onto one coordinate plane.
+
+        Using `ax.contour(..., zdir=...)` directly on the lateral planes can
+        produce warped profiles in mplot3d. We therefore compute the contour
+        segments in 2D first and then place each segment explicitly onto the
+        desired 3D plane.
+        """
+        tmp_fig, tmp_ax = plt.subplots()
+        contour_set = tmp_ax.contour(
+            grid_u,
+            grid_v,
+            density_grid,
+            levels=contour_levels,
+        )
+        plt.close(tmp_fig)
+
+        for level_segments in contour_set.allsegs:
+            for segment in level_segments:
+                if segment.shape[0] < 2:
+                    continue
+
+                if plane == "xy":
+                    ax.plot(
+                        segment[:, 0],
+                        segment[:, 1],
+                        zs=offset,
+                        zdir="z",
+                        color=contour_color,
+                        linewidth=contour_lw,
+                        alpha=contour_alpha,
+                    )
+                elif plane == "xz":
+                    ax.plot(
+                        segment[:, 0],
+                        np.full(segment.shape[0], offset),
+                        segment[:, 1],
+                        color=contour_color,
+                        linewidth=contour_lw,
+                        alpha=contour_alpha,
+                    )
+                elif plane == "yz":
+                    ax.plot(
+                        np.full(segment.shape[0], offset),
+                        segment[:, 0],
+                        segment[:, 1],
+                        color=contour_color,
+                        linewidth=contour_lw,
+                        alpha=contour_alpha,
+                    )
+                else:
+                    raise ValueError(f"Unknown plane '{plane}'")
 
     # ============================================================
     # Figure
@@ -580,10 +676,11 @@ def plot_delta_density_3d(
         cstride=1,
         facecolors=cmap(proj_norm(D_xy)),
         shade=False,
-        alpha=0.58,
+        alpha=projected_density_alpha,
         linewidth=0,
         antialiased=False,
     )
+    draw_projected_contours(X_xy, Y_xy, D_xy, plane="xy", offset=-lim)
 
     # ------------------------------------------------------------
     # Projection 2: density of (Δo1, Δo3) on plane y = -lim
@@ -598,10 +695,11 @@ def plot_delta_density_3d(
         cstride=1,
         facecolors=cmap(proj_norm(D_xz)),
         shade=False,
-        alpha=0.58,
+        alpha=projected_density_alpha,
         linewidth=0,
         antialiased=False,
     )
+    draw_projected_contours(X_xz, Z_xz, D_xz, plane="xz", offset=-lim)
 
     # ------------------------------------------------------------
     # Projection 3: density of (Δo2, Δo3) on plane x = -lim
@@ -616,10 +714,11 @@ def plot_delta_density_3d(
         cstride=1,
         facecolors=cmap(proj_norm(D_yz)),
         shade=False,
-        alpha=0.58,
+        alpha=projected_density_alpha,
         linewidth=0,
         antialiased=False,
     )
+    draw_projected_contours(Y_yz, Z_yz, D_yz, plane="yz", offset=-lim)
 
 
     # ============================================================
@@ -687,7 +786,7 @@ def plot_delta_density_3d(
     # Labels on projection-plane axes
     # ============================================================
 
-    label_fs = 11
+    label_fs = 13
 
     # xy projection labels
     ax.text(
@@ -758,7 +857,7 @@ def plot_delta_density_3d(
         y,
         z,
         c=density,
-        cmap="cividis",
+        cmap=get_soft_cividis(),
         norm=density_norm,
         s=scatter_size,
         alpha=0.92,
@@ -814,7 +913,8 @@ def plot_delta_density_3d(
 
     # Colorbar for the 3D point cloud
     cbar = fig.colorbar(scatter, ax=ax, shrink=0.78, pad=0.06)
-    cbar.set_label("KDE density of attack perturbations")
+    cbar.set_label("KDE density of attack perturbations", fontsize=13)
+    cbar.ax.tick_params(labelsize=12)
 
     out_dir = os.path.dirname(outpath)
     if out_dir:

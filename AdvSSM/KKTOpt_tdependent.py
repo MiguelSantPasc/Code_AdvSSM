@@ -27,7 +27,6 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
@@ -310,27 +309,28 @@ def plot_attack_effect_boxplots(
     epsilon: float,
 ) -> None:
     """
-    Plot the mean local and global attack effects together in one panel so
-    their dependence on the attacked time can be compared directly.
+    Plot the mean local and global attack effects in two stacked panels.
+    Each panel shows one mean curve so the labels can stay clean and the
+    panel title can occupy the old "(A)/(B)" position.
     """
     _set_plot_theme()
 
     c_local_line = "#5E738F"
     c_global_line = "#6E9181"
-    t_offset = 0.05
+    title_fontsize = 15.5
+    ylabel_fontsize = 18.0
 
-    fig, ax = plt.subplots(figsize=(15.5, 6.2), constrained_layout=True)
-    _style_axis(ax)
-    ax.spines["left"].set_position(("axes", 0.03))
-    ax_right = ax.twinx()
-    ax_right.set_facecolor("none")
-    ax_right.spines["top"].set_visible(False)
-    ax_right.spines["left"].set_visible(False)
-    ax_right.spines["right"].set_color("black")
-    ax_right.spines["right"].set_alpha(0.9)
-    ax_right.spines["right"].set_position(("axes", 0.97))
-    ax_right.grid(False)
-    
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(15.5, 9.5),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    for ax in axes:
+        _style_axis(ax)
+
     local_means = np.array([
         np.nanmean(local_mat[:, i]) if np.any(np.isfinite(local_mat[:, i])) else np.nan
         for i in range(local_mat.shape[1])
@@ -339,29 +339,25 @@ def plot_attack_effect_boxplots(
         np.nanmean(global_mat[:, i]) if np.any(np.isfinite(global_mat[:, i])) else np.nan
         for i in range(global_mat.shape[1])
     ], dtype=float)
-    local_t_values = t_values.astype(float) - t_offset
-    global_t_values = t_values.astype(float) + t_offset
 
-    ax.plot(
-        local_t_values,
+    axes[0].plot(
+        t_values,
         local_means,
         color=c_local_line,
         marker="o",
         markersize=5.5,
         linewidth=2.3,
         zorder=3,
-        label="Local mean",
     )
 
-    ax_right.plot(
-        global_t_values,
+    axes[1].plot(
+        t_values,
         global_means,
         color=c_global_line,
         marker="o",
         markersize=5.5,
         linewidth=2.3,
         zorder=3,
-        label="Global mean",
     )
 
     finite_local = local_means[np.isfinite(local_means)]
@@ -374,7 +370,7 @@ def plot_attack_effect_boxplots(
         if span < 1e-6:
             pad = 0.01 * max(abs(y_min), abs(y_max), 1.0)
 
-        ax.set_ylim(y_min - pad, y_max + pad)
+        axes[0].set_ylim(y_min - pad, y_max + pad)
 
     finite_global = global_means[np.isfinite(global_means)]
     if finite_global.size > 0:
@@ -386,29 +382,40 @@ def plot_attack_effect_boxplots(
         if span < 1e-6:
             pad = 0.01 * max(abs(y_min), abs(y_max), 1.0)
 
-        ax_right.set_ylim(y_min - pad, y_max + pad)
+        axes[1].set_ylim(y_min - pad, y_max + pad)
 
-    ax.set_xlabel("Attacked time step $t$")
-    ax.set_ylabel("Mean local attack effect", color="black")
-    ax_right.set_ylabel("Mean global attack effect", color="black")
-    ax.set_xticks(t_values)
-    ax.set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
-    ax.tick_params(axis="y", colors="black", direction="in", pad=8)
-    ax_right.tick_params(axis="y", colors="black", direction="in", pad=8)
-
-    legend_handles = [
-        Line2D([0], [0], color=c_local_line, marker="o", linewidth=2.3, markersize=5.5, label="Local mean"),
-        Line2D([0], [0], color=c_global_line, marker="o", linewidth=2.3, markersize=5.5, label="Global mean"),
-    ]
-    ax.legend(
-        handles=legend_handles,
-        loc="upper left",
-        bbox_to_anchor=(0.055, 0.98),
-        frameon=True,
-        fancybox=True,
-        framealpha=0.95,
-        edgecolor="#DDDDDD",
+    # Keep the titles where the old panel tags lived and enlarge the formulas.
+    axes[0].set_title(
+        "Mean local effect of attack",
+        loc="left",
+        pad=10,
+        fontweight="bold",
+        fontsize=title_fontsize,
     )
+    axes[1].set_title(
+        "Mean global effect of attack",
+        loc="left",
+        pad=10,
+        fontweight="bold",
+        fontsize=title_fontsize,
+    )
+
+    axes[0].set_ylabel(
+        r"$\mathbb{E}\!\left[\sum_j |x_t^{(j)}-\hat{x}_{t,\mathrm{adv}}^{(j)}|\right]$",
+        color="black",
+        fontsize=ylabel_fontsize,
+    )
+    axes[1].set_ylabel(
+        r"$\mathbb{E}\!\left[\sum_{k=0}^{T}\sum_j |x_k^{(j)}-\hat{x}_{k,\mathrm{adv}}^{(j)}|\right]$",
+        color="black",
+        fontsize=ylabel_fontsize,
+    )
+    axes[1].set_xlabel("Attacked time step $t$")
+
+    for ax in axes:
+        ax.set_xticks(t_values)
+        ax.set_xlim(float(t_values[0]) - 0.75, float(t_values[-1]) + 0.75)
+        ax.tick_params(axis="y", colors="black", direction="in", pad=8)
 
     out_dir = os.path.dirname(outpath)
     if out_dir:
@@ -422,7 +429,7 @@ def plot_attack_effect_boxplots(
 # ============================================================
 def main() -> None:
     N_runs = 5000
-    T = 8
+    T = 12
     epsilon = 5.991
     base_seed = 2022
     force_recompute = False
@@ -437,7 +444,7 @@ def main() -> None:
     )
     fig_path = os.path.join(
         figures_dir,
-        f"mc_attack_effects_dual_axis_means_N{N_runs}_T{T}_eps{epsilon:.3f}.png"
+        f"mc_attack_effects_boxplots_N{N_runs}_T{T}_eps{epsilon:.3f}.png"
     )
 
     if os.path.exists(cache_path) and not force_recompute:

@@ -83,10 +83,11 @@ def _set_plot_theme() -> None:
 
 def _style_axis(ax, *, facecolor: str = "#FBFBFD") -> None:
     ax.set_facecolor(facecolor)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_alpha(0.55)
-    ax.spines["bottom"].set_alpha(0.55)
+    # Draw a full black frame so each panel is visually boxed.
+    for side in ["top", "right", "left", "bottom"]:
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_color("black")
+        ax.spines[side].set_linewidth(1.0)
     ax.grid(True, alpha=0.20)
 
 
@@ -175,10 +176,10 @@ def plot_attack_figure_four_panels(
 
     def _style_axis_local(ax):
         ax.set_facecolor("#FBFBFD")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_alpha(0.55)
-        ax.spines["bottom"].set_alpha(0.55)
+        for side in ["top", "right", "left", "bottom"]:
+            ax.spines[side].set_visible(True)
+            ax.spines[side].set_color("black")
+            ax.spines[side].set_linewidth(1.0)
         ax.grid(True, alpha=0.20)
 
     def _points_limits_local(points: list[np.ndarray], pad_frac: float = 0.10):
@@ -202,28 +203,28 @@ def plot_attack_figure_four_panels(
         pad = pad_frac * d + 1e-6
         return (cx - 0.5 * d - pad, cx + 0.5 * d + pad), (cy - 0.5 * d - pad, cy + 0.5 * d + pad)
 
-    # ---------- palette ----------
-    c_base = "#2F6FA8"   # azul
-    c_adv = "#C85B4F"    # terracota
-    c_true = "#2F2F2F"   # charcoal
-    c_geom1 = "#6A5ACD"  # constraint
-    c_geom2 = "#2CA58D"  # objective level-set
-    c_mu = "#6A5ACD"
-    c_y = "#111111"
-    c_star = "#D4A017"
-    c_attack_band = "#E9D8A6"
+    # Pastel palette aligned with the requested reference figure.
+    c_base = "#5B84B1"
+    c_adv = "#D9826B"
+    c_true = "#3A3A3A"
+    c_constraint = "#7C8F69"
+    c_objective = "#9C7B62"
+    c_mu = "#35B24A"
+    c_y = "#E53935"
+    c_star = "#8E63CE"
+    c_attack_line = "#8CC7FF"
 
     T = x_true.shape[0] - 1
     tt = np.arange(T + 1)
     z = 1.96
 
     # Figura más grande para que respiren leyendas + ejes
-    fig = plt.figure(figsize=(17.0, 12.0), constrained_layout=True)
+    fig = plt.figure(figsize=(13.6, 8.8), constrained_layout=True)
     gs = fig.add_gridspec(
         nrows=2, ncols=2,
         width_ratios=[1.0, 1.0],
-        height_ratios=[1.0, 1.08],
-        wspace=0.18, hspace=0.16,
+        height_ratios=[1.0, 1.0],
+        wspace=0.04, hspace=0.035,
     )
 
     # ARRIBA: series temporales
@@ -239,11 +240,12 @@ def plot_attack_figure_four_panels(
             _style_axis(ax)
         except NameError:
             _style_axis_local(ax)
+        ax.set_box_aspect(0.62)
 
     # =========================================================
     # TOP ROW: time-series panels (x1 and x2)
     # =========================================================
-    def _plot_state_time(ax, idx: int, panel_title: str) -> None:
+    def _plot_state_time(ax, idx: int, state_label: str) -> None:
         x_line = x_true[:, idx]
         m_base = m_smooth_base[:, idx]
         sd_base = np.sqrt(np.maximum(P_smooth_base[:, idx, idx], 0.0))
@@ -251,53 +253,49 @@ def plot_attack_figure_four_panels(
         m_adv = m_smooth_adv[:, idx]
         sd_adv = np.sqrt(np.maximum(P_smooth_adv[:, idx, idx], 0.0))
 
-        # Banda vertical del instante atacado
-        ax.axvspan(t - 0.35, t + 0.35, color=c_attack_band, alpha=0.28, zorder=0)
-        ax.axvline(t, color="#8D6E63", linewidth=1.0, alpha=0.45)
+        # Mark the attacked time with a thin guide like in the reference.
+        ax.axvline(t, color=c_attack_line, linewidth=1.0, alpha=0.95, zorder=0)
 
         # Base
         ax.fill_between(
             tt, m_base - z * sd_base, m_base + z * sd_base,
-            color=c_base, alpha=0.18, label="Base 95% CI", zorder=1
+            color=c_base, alpha=0.18, zorder=1
         )
-        ax.plot(tt, m_base, color=c_base, linewidth=1.9, label="Base RTS mean", zorder=3)
+        ax.plot(tt, m_base, color=c_base, linewidth=1.4, linestyle="--", label=r"Estimated $s_t$", zorder=3)
 
         # Adversarial
         ax.fill_between(
             tt, m_adv - z * sd_adv, m_adv + z * sd_adv,
-            color=c_adv, alpha=0.13, label="Adv 95% CI", zorder=1
+            color=c_adv, alpha=0.13, zorder=1
         )
-        ax.plot(tt, m_adv, color=c_adv, linewidth=1.9, linestyle="--", label="Adv RTS mean", zorder=3)
+        ax.plot(tt, m_adv, color=c_adv, linewidth=1.4, linestyle="--", label=r"Attacked $s_t$", zorder=3)
 
         # True state
         ax.plot(
             tt, x_line, color=c_true, marker="o", markersize=2.6,
-            linewidth=1.1, alpha=0.9, label=f"True x[{idx}]", zorder=2
+            linewidth=1.0, alpha=0.9, label=r"Actual $s_t$", zorder=2
         )
 
         # Marcadores en t
         ax.scatter([t], [x_line[t]], color=c_true, s=28, zorder=5)
         ax.scatter([t], [m_base[t]], color=c_base, s=30, zorder=5)
         ax.scatter([t], [m_adv[t]], color=c_adv, s=34, marker="D", zorder=5)
-
-        ax.set_title(panel_title, loc="left", fontweight="semibold")
+        ax.set_title(fr"${state_label}$ impact", fontweight="normal", pad=3.0)
         ax.set_xlabel("time t")
-        ax.set_ylabel(f"x[{idx}]")
+        ax.set_ylabel(fr"${state_label}$")
         ax.margins(x=0.02)
 
         # Leyenda compacta dentro (sin montarse)
         ax.legend(
-            loc="upper left",
+            loc="upper right",
             frameon=True,
             framealpha=0.94,
-            ncol=2,
-            columnspacing=0.9,
-            handlelength=1.8,
+            handlelength=1.6,
             borderpad=0.45,
         )
 
-    _plot_state_time(ax_ts1, idx=0, panel_title="(A) Attack impact on x1 over time")
-    _plot_state_time(ax_ts2, idx=1, panel_title="(B) Attack impact on x2 over time")
+    _plot_state_time(ax_ts1, idx=0, state_label="s_1")
+    _plot_state_time(ax_ts2, idx=1, state_label="s_2")
 
     # =========================================================
     # BOTTOM-LEFT: geometry (ellipses)
@@ -313,45 +311,33 @@ def plot_attack_figure_four_panels(
 
     ax_geom.fill(
         pts_constraint[:, 0], pts_constraint[:, 1],
-        color=c_geom1, alpha=0.14, label="Constraint region"
+        color=c_constraint, alpha=0.10
     )
-    ax_geom.plot(
+    constraint_line, = ax_geom.plot(
         pts_constraint[:, 0], pts_constraint[:, 1],
-        color=c_geom1, linewidth=2.0, alpha=0.95
+        color=c_constraint, linewidth=1.6, alpha=0.95, label="Constraint"
     )
 
     ax_geom.fill(
         pts_obj[:, 0], pts_obj[:, 1],
-        color=c_geom2, alpha=0.10, label="Objective level-set"
+        color=c_objective, alpha=0.08
     )
-    ax_geom.plot(
+    objective_line, = ax_geom.plot(
         pts_obj[:, 0], pts_obj[:, 1],
-        color=c_geom2, linewidth=1.8, linestyle="--", alpha=0.95
+        color=c_objective, linewidth=1.6, linestyle="--", alpha=0.95, label="Objective"
     )
 
-    ax_geom.scatter([mu_t[0]], [mu_t[1]], s=55, marker="o", color=c_mu, label=r"$o_{-t}$", zorder=5)
-    ax_geom.scatter([y_t[0]], [y_t[1]], s=65, marker="x", linewidths=2.0, color=c_y, label=r"$o_t$", zorder=6)
-    ax_geom.scatter([y_star[0]], [y_star[1]], s=120, marker="*", color=c_star, edgecolor="black",
-                    linewidths=0.4, label=r"$o^{adv}_t$", zorder=7)
-
-    ax_geom.plot([y_t[0], y_star[0]], [y_t[1], y_star[1]],
-                 color=c_adv, linewidth=1.4, alpha=0.85, linestyle="-.", zorder=4)
-    
-    ax_geom.annotate(
-        "",
-        xy=(y_star[0], y_star[1]),      # destino: o_t^{adv}
-        xytext=(y_t[0], y_t[1]),        # origen: o_t
-        arrowprops=dict(
-            arrowstyle="->",
-            color=c_adv,
-            lw=1.8,
-            alpha=0.95,
-            linestyle="-.",
-            shrinkA=6,
-            shrinkB=8,
-            mutation_scale=14,
-        ),
-        zorder=4
+    mu_handle = ax_geom.scatter(
+        [mu_t[0]], [mu_t[1]], s=60, marker="x", linewidths=1.6, color=c_mu,
+        label=r"$\hat{o}_{-t}$", zorder=5
+    )
+    y_handle = ax_geom.scatter(
+        [y_t[0]], [y_t[1]], s=60, marker="x", linewidths=1.6, color=c_y,
+        label=r"$o_t$", zorder=6
+    )
+    star_handle = ax_geom.scatter(
+        [y_star[0]], [y_star[1]], s=90, marker="x", linewidths=1.8, color=c_star,
+        label=r"$o_t^{\mathrm{adv}}$", zorder=7
     )
 
     try:
@@ -362,11 +348,22 @@ def plot_attack_figure_four_panels(
     ax_geom.set_xlim(*xlim_g)
     ax_geom.set_ylim(*ylim_g)
 
-    ax_geom.set_title(f"(C) Attack geometry at t={t}", loc="left", fontweight="semibold")
-    ax_geom.set_xlabel(r"$o_t^x$")
-    ax_geom.set_ylabel(r"$o_t^y$", labelpad=-75)
-    ax_geom.set_aspect("equal", adjustable="box")
-    ax_geom.legend(loc="upper left", frameon=True, framealpha=0.94)
+    ax_geom.set_title(fr"Attack geometry at t={t} ($\epsilon$=90%)", fontweight="normal", pad=3.0)
+    ax_geom.set_xlabel(r"$o_1$")
+    ax_geom.set_ylabel(r"$o_2$")
+    legend_regions = ax_geom.legend(
+        handles=[constraint_line, objective_line],
+        loc="upper left",
+        frameon=True,
+        framealpha=0.94,
+    )
+    ax_geom.add_artist(legend_regions)
+    ax_geom.legend(
+        handles=[mu_handle, y_handle, star_handle],
+        loc="upper right",
+        frameon=True,
+        framealpha=0.94,
+    )
 
     # =========================================================
     # BOTTOM-RIGHT: trajectory in state-space (x1 vs x2)
@@ -378,28 +375,55 @@ def plot_attack_figure_four_panels(
     ax_traj.plot(
         x_true_xy[:, 0], x_true_xy[:, 1],
         color=c_true, linewidth=1.2, marker="o", markersize=2.4,
-        alpha=0.85, label="True path"
+        alpha=0.85, label=r"Actual $s_t$"
     )
     ax_traj.plot(
         base_xy[:, 0], base_xy[:, 1],
-        color=c_base, linewidth=2.0, label="Base RTS path"
+        color=c_base, linewidth=1.5, linestyle="--", marker="o", markersize=2.4,
+        label=r"Estimated $s_t$"
     )
     ax_traj.plot(
         adv_xy[:, 0], adv_xy[:, 1],
-        color=c_adv, linewidth=2.0, linestyle="--", label="Adv RTS path"
+        color=c_adv, linewidth=1.5, linestyle="--", marker="o", markersize=2.4,
+        label=r"Attacked $s_t$"
     )
 
-    # Start/end
-    ax_traj.scatter([x_true_xy[0, 0]], [x_true_xy[0, 1]],
-                    marker="s", s=70, color="#2E7D32", edgecolor="black", linewidths=0.4, zorder=7, label="Start")
-    ax_traj.scatter([x_true_xy[-1, 0]], [x_true_xy[-1, 1]],
-                    marker="X", s=85, color="#B71C1C", edgecolor="black", linewidths=0.4, zorder=7, label="End")
+    start_handle = ax_traj.scatter(
+        [x_true_xy[0, 0]],
+        [x_true_xy[0, 1]],
+        marker="s",
+        s=68,
+        color="#2E7D32",
+        edgecolor="black",
+        linewidths=0.4,
+        zorder=8,
+        label="Start",
+    )
+    finished_handle = ax_traj.scatter(
+        [x_true_xy[-1, 0]],
+        [x_true_xy[-1, 1]],
+        marker="X",
+        s=78,
+        color="#B71C1C",
+        edgecolor="black",
+        linewidths=0.4,
+        zorder=8,
+        label="Finished",
+    )
 
-    # Highlight attack time
-    ax_traj.scatter([base_xy[t, 0]], [base_xy[t, 1]],
-                    s=65, marker="o", color=c_base, edgecolor="white", linewidths=0.7, zorder=8, label="Base at t")
-    ax_traj.scatter([adv_xy[t, 0]], [adv_xy[t, 1]],
-                    s=95, marker="*", color=c_star, edgecolor="black", linewidths=0.5, zorder=9, label="Adv at t")
+    # Highlight the attacked time with explicit black/blue/orange points.
+    ax_traj.scatter(
+        [x_true_xy[t, 0]], [x_true_xy[t, 1]],
+        s=54, marker="o", color=c_true, edgecolor="white", linewidths=0.5, zorder=9
+    )
+    ax_traj.scatter(
+        [base_xy[t, 0]], [base_xy[t, 1]],
+        s=54, marker="o", color=c_base, edgecolor="white", linewidths=0.5, zorder=9
+    )
+    ax_traj.scatter(
+        [adv_xy[t, 0]], [adv_xy[t, 1]],
+        s=54, marker="o", color=c_adv, edgecolor="white", linewidths=0.5, zorder=9
+    )
 
     ax_traj.plot([base_xy[t, 0], adv_xy[t, 0]], [base_xy[t, 1], adv_xy[t, 1]],
                  color=c_adv, linestyle=":", linewidth=1.2, alpha=0.9, zorder=6)
@@ -412,11 +436,15 @@ def plot_attack_figure_four_panels(
     ax_traj.set_xlim(*xlim_tr)
     ax_traj.set_ylim(*ylim_tr)
 
-    ax_traj.set_title("(D) State-space trajectory (x1 vs x2)", loc="left", fontweight="semibold")
-    ax_traj.set_xlabel("x1 (component 0)")
-    ax_traj.set_ylabel("x2 (component 1)")
-    ax_traj.set_aspect("equal", adjustable="box")
-    ax_traj.legend(loc="upper right", frameon=True, framealpha=0.94)
+    ax_traj.set_title(r"Hidden State-space($s_1$ vs $s_2$)", fontweight="normal", pad=3.0)
+    ax_traj.set_xlabel(r"$s_1$")
+    ax_traj.set_ylabel(r"$s_2$")
+    ax_traj.legend(
+        handles=[ax_traj.lines[0], ax_traj.lines[1], ax_traj.lines[2], start_handle, finished_handle],
+        loc="upper right",
+        frameon=True,
+        framealpha=0.94,
+    )
 
     # Título global
     fig.suptitle(
@@ -425,6 +453,9 @@ def plot_attack_figure_four_panels(
         fontweight="semibold",
         y=0.995,
     )
+
+    if fig._suptitle is not None:
+        fig._suptitle.set_visible(False)
 
     fig.align_ylabels([ax_ts1, ax_ts2, ax_geom, ax_traj])
 
@@ -442,31 +473,34 @@ def plot_attack_figure_four_panels(
 def main() -> None:
     # ---- your setup
     n_x = n_y = n_u = 2
-    T = 12
-    seed = 2026
-    t = T
-    epsilon = 5.991  # typical 95% chi-square in 2D constraint
+    T = 10
+    candidate_seeds = [2058]
+    t = 5
+    epsilon_prob = 0.90
+    epsilon_percent = int(round(100.0 * epsilon_prob))
+    matrix_tag = "swap12"
+    # Probability mass used for the 2D observation-space chi-square constraint.
+    epsilon = -2.0 * np.log(1.0 - epsilon_prob)
     force_recompute = False
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
-    outpath = os.path.join(out_dir, f"attack_four_panels_t{t}_T{T}_seed{seed}.png")
-    data_path = data_path_for_plot(outpath)
 
     # your matrices
-    A0 = np.array([[0.65, 0.40],
-                   [-0.15, 0.70]], dtype=float)
+    # Swap coordinates 1 <-> 2 by permuting rows/columns in the 2D system.
+    A0 = np.array([[0.70, -0.15],
+                   [0.40, 0.65]], dtype=float)
 
-    B0 = np.array([[1.65, 1.40],
-                   [-0.15, 0.70]], dtype=float)
+    B0 = np.array([[0.70, -0.15],
+                   [1.40, 1.65]], dtype=float)
 
     H0 = np.eye(n_y, n_x)
     D0 = np.zeros((n_y, n_u), dtype=float)
 
-    Q0 = 0.3 * np.array([[1.6, -0.40],
-                         [-1.15, 0.70]], dtype=float)
+    Q0 = np.array([[0.2100, -0.2325],
+                   [-0.2325, 0.4800]], dtype=float)
 
-    R0 = 0.42 * np.array([[0.65, 0.40],
-                         [-0.15, 1.70]], dtype=float)
+    R0 = np.array([[0.7140, 0.0525],
+                   [0.0525, 0.2730]], dtype=float)
 
     # project covariances to PSD (recommended)
     Q0 = project_to_psd(Q0)
@@ -484,110 +518,116 @@ def main() -> None:
     m0 = x0.copy()
     P0 = 0.05 * np.eye(n_x)
 
-    def compute_plot_data() -> dict[str, np.ndarray | float | int]:
-        # ---- simulate
-        x, y, u, mats = simulate_lgssm_nd(
-            A0=A0, B0=B0, H0=H0, D0=D0,
-            T=T, seed=seed, x0=x0,
-            Q0=Q0, R0=R0,
-            dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
-            u_low=-0.5, u_high=0.5,
-        )
+    def run_seed(seed: int) -> str:
+        outpath = os.path.join(out_dir, f"attack_four_panels_t{t}_T{T}_seed{seed}.png")
+        cache_plot_path = outpath.replace(".png", f"_{matrix_tag}_eps{epsilon_percent}.png")
+        data_path = data_path_for_plot(cache_plot_path)
 
-        # ---- compute X_t, mu_t, Sigma_t at time t
-        X_t, mu_t, Sigma_t = loo_values_nd(
+        def compute_plot_data() -> dict[str, np.ndarray | float | int]:
+            # Simulate and solve the attack for one candidate seed.
+            x, y, u, mats = simulate_lgssm_nd(
+                A0=A0, B0=B0, H0=H0, D0=D0,
+                T=T, seed=seed, x0=x0,
+                Q0=Q0, R0=R0,
+                dA=dA, dB=dB, dH=dH, dD=dD, dQ=dQ, dR=dR,
+                u_low=-0.5, u_high=0.5,
+            )
+
+            X_t, mu_t, Sigma_t = loo_values_nd(
+                t=t,
+                y=y, u=u,
+                A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+                Q_t=mats["Q_t"], R_t=mats["R_t"],
+                P0=P0, m0=m0,
+            )
+            y_t = y[t].copy()
+
+            y_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
+                X=X_t, y_t=y_t, mu=mu_t, Sigma=Sigma_t, epsilon=epsilon
+            )
+
+            m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
+                y=y, u=u,
+                A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+                Q_t=mats["Q_t"], R_t=mats["R_t"],
+                m0=m0, P0=P0
+            )
+            m_smooth_b, P_smooth_b = rts_smoother_nd(
+                m_filt=m_filt_b, P_filt=P_filt_b,
+                m_pred=m_pred_b, P_pred=P_pred_b,
+                A_t=mats["A_t"]
+            )
+
+            y_adv = y.copy()
+            y_adv[t] = y_star
+
+            m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
+                y=y_adv, u=u,
+                A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
+                Q_t=mats["Q_t"], R_t=mats["R_t"],
+                m0=m0, P0=P0
+            )
+            m_smooth_a, P_smooth_a = rts_smoother_nd(
+                m_filt=m_filt_a, P_filt=P_filt_a,
+                m_pred=m_pred_a, P_pred=P_pred_a,
+                A_t=mats["A_t"]
+            )
+
+            Sinv = inv_psd(Sigma_t)
+            constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
+
+            return {
+                "t": t,
+                "T": T,
+                "seed": seed,
+                "epsilon": epsilon,
+                "x_true": x,
+                "y_t": y_t,
+                "mu_t": mu_t,
+                "Sigma_t": Sigma_t,
+                "X_t": X_t,
+                "y_star": y_star,
+                "obj_star": obj_star,
+                "constr_val": constr_val,
+                "m_smooth_base": m_smooth_b,
+                "P_smooth_base": P_smooth_b,
+                "m_smooth_adv": m_smooth_a,
+                "P_smooth_adv": P_smooth_a,
+            }
+
+        data = cached_npz(data_path, compute_plot_data, force=force_recompute)
+
+        y_t = data["y_t"]
+        mu_t = data["mu_t"]
+        Sigma_t = data["Sigma_t"]
+        X_t = data["X_t"]
+        y_star = data["y_star"]
+        obj_star = float(data["obj_star"])
+        constr_val = float(data["constr_val"])
+
+        print(f"\n[seed={seed}, t={t}] constraint value = {constr_val:.6f} (should be <= epsilon={epsilon})")
+        print(f"[seed={seed}, t={t}] objective value  = {obj_star:.6f}")
+        print(f"[seed={seed}, t={t}] o_t              = {y_t}")
+        print(f"[seed={seed}, t={t}] o_-t             = {mu_t}")
+        print(f"[seed={seed}, t={t}] o_t^{{adv}}      = {y_star}")
+
+        plot_attack_figure_four_panels(
             t=t,
-            y=y, u=u,
-            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-            Q_t=mats["Q_t"], R_t=mats["R_t"],
-            P0=P0, m0=m0,
+            y_t=y_t, mu_t=mu_t, Sigma_t=Sigma_t, X_t=X_t,
+            y_star=y_star, obj_star=obj_star, epsilon=epsilon,
+            x_true=data["x_true"],
+            m_smooth_base=data["m_smooth_base"], P_smooth_base=data["P_smooth_base"],
+            m_smooth_adv=data["m_smooth_adv"], P_smooth_adv=data["P_smooth_adv"],
+            outpath=outpath,
         )
-        y_t = y[t].copy()
+        print(f"Saved figure to: {outpath}")
+        return outpath
 
-        # ---- KKT solve
-        y_star, obj_star = solve_kkt_max_quadratic_over_ellipsoid(
-            X=X_t, y_t=y_t, mu=mu_t, Sigma=Sigma_t, epsilon=epsilon
-        )
+    saved_paths = [run_seed(seed) for seed in candidate_seeds]
 
-        # ---- RTS smoother on baseline y
-        m_filt_b, P_filt_b, m_pred_b, P_pred_b = kalman_filter_nd(
-            y=y, u=u,
-            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-            Q_t=mats["Q_t"], R_t=mats["R_t"],
-            m0=m0, P0=P0
-        )
-        m_smooth_b, P_smooth_b = rts_smoother_nd(
-            m_filt=m_filt_b, P_filt=P_filt_b,
-            m_pred=m_pred_b, P_pred=P_pred_b,
-            A_t=mats["A_t"]
-        )
-
-        # ---- RTS smoother on adversarial y': replace only y[t]
-        y_adv = y.copy()
-        y_adv[t] = y_star
-
-        m_filt_a, P_filt_a, m_pred_a, P_pred_a = kalman_filter_nd(
-            y=y_adv, u=u,
-            A_t=mats["A_t"], B_t=mats["B_t"], H_t=mats["H_t"], D_t=mats["D_t"],
-            Q_t=mats["Q_t"], R_t=mats["R_t"],
-            m0=m0, P0=P0
-        )
-        m_smooth_a, P_smooth_a = rts_smoother_nd(
-            m_filt=m_filt_a, P_filt=P_filt_a,
-            m_pred=m_pred_a, P_pred=P_pred_a,
-            A_t=mats["A_t"]
-        )
-
-        Sinv = inv_psd(Sigma_t)
-        constr_val = float((y_star - mu_t).T @ Sinv @ (y_star - mu_t))
-
-        return {
-            "t": t,
-            "T": T,
-            "seed": seed,
-            "epsilon": epsilon,
-            "x_true": x,
-            "y_t": y_t,
-            "mu_t": mu_t,
-            "Sigma_t": Sigma_t,
-            "X_t": X_t,
-            "y_star": y_star,
-            "obj_star": obj_star,
-            "constr_val": constr_val,
-            "m_smooth_base": m_smooth_b,
-            "P_smooth_base": P_smooth_b,
-            "m_smooth_adv": m_smooth_a,
-            "P_smooth_adv": P_smooth_a,
-        }
-
-    data = cached_npz(data_path, compute_plot_data, force=force_recompute)
-
-    t = int(data["t"])
-    epsilon = float(data["epsilon"])
-    y_t = data["y_t"]
-    mu_t = data["mu_t"]
-    Sigma_t = data["Sigma_t"]
-    X_t = data["X_t"]
-    y_star = data["y_star"]
-    obj_star = float(data["obj_star"])
-    constr_val = float(data["constr_val"])
-
-    print(f"\n[t={t}] constraint value = {constr_val:.6f} (should be <= epsilon={epsilon})")
-    print(f"[t={t}] objective value  = {obj_star:.6f}")
-    print(f"[t={t}] o_t              = {y_t}")
-    print(f"[t={t}] o_-t             = {mu_t}")
-    print(f"[t={t}] o_t^{{adv}}      = {y_star}")
-
-    plot_attack_figure_four_panels(
-        t=t,
-        y_t=y_t, mu_t=mu_t, Sigma_t=Sigma_t, X_t=X_t,
-        y_star=y_star, obj_star=obj_star, epsilon=epsilon,
-        x_true=data["x_true"],
-        m_smooth_base=data["m_smooth_base"], P_smooth_base=data["P_smooth_base"],
-        m_smooth_adv=data["m_smooth_adv"], P_smooth_adv=data["P_smooth_adv"],
-        outpath=outpath,
-    )
-    print(f"\nSaved figure to: {outpath}")
+    print("\nGenerated candidate figures:")
+    for path in saved_paths:
+        print(path)
 
 
 import os as _os

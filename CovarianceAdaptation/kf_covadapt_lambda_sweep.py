@@ -65,6 +65,22 @@ from shared_ssm.legacy import kalman_filter_nd_previous_observation as kalman_fi
 from shared_ssm.legacy import simulate_lgssm_nd_previous_observation as simulate_lgssm_nd
 
 
+LAMBDA_SWEEP_FIGSIZE = (15.2, 4.1)
+LAMBDA_SWEEP_WIDTH_RATIOS = (1.78, 1.38, 1.38)
+LAMBDA_SWEEP_WSPACE = 0.045
+LAMBDA_SWEEP_CONSTRAINED_W_PAD = 0.012
+LAMBDA_SWEEP_CONSTRAINED_H_PAD = 0.012
+LAMBDA_SWEEP_CONSTRAINED_WSPACE = 0.018
+LAMBDA_SWEEP_CONSTRAINED_HSPACE = 0.020
+PANEL_LEGEND_FONT_SIZE = 10.4
+PANEL_LEGEND_BORDER_PAD = 0.40
+PANEL_LEGEND_LABEL_SPACING = 0.30
+PANEL_LEGEND_HANDLE_LENGTH = 1.75
+PANEL_LEGEND_HANDLE_TEXT_PAD = 0.45
+LAMBDA_COLORBAR_FRACTION = 0.034
+LAMBDA_COLORBAR_PAD = 0.010
+
+
 def build_linear_objective_attack_score_builder(
     *,
     attack_t: int,
@@ -733,7 +749,16 @@ def draw_effect_curve_panel(
     ax.minorticks_off()
     ax.set_xlabel(r"$c$ in $\lambda = c\,\lambda_{\max}$")
     ax.set_ylabel(ylabel)
-    ax.legend(loc="upper left", frameon=True, framealpha=0.95, borderpad=0.35)
+    ax.legend(
+        loc="upper right",
+        frameon=True,
+        framealpha=0.95,
+        fontsize=PANEL_LEGEND_FONT_SIZE,
+        borderpad=PANEL_LEGEND_BORDER_PAD,
+        labelspacing=PANEL_LEGEND_LABEL_SPACING,
+        handlelength=PANEL_LEGEND_HANDLE_LENGTH,
+        handletextpad=PANEL_LEGEND_HANDLE_TEXT_PAD,
+    )
 
 
 def draw_state_dimension_panel(
@@ -828,7 +853,16 @@ def draw_state_dimension_panel(
     ax.set_xlim(-0.15, x_true.shape[0] - 0.85)
     ax.set_xlabel("time t")
     ax.set_ylabel(rf"$s_t^{{({dim_idx + 1})}}$")
-    ax.legend(loc=legend_loc, frameon=True, framealpha=0.95, borderpad=0.35)
+    ax.legend(
+        loc=legend_loc,
+        frameon=True,
+        framealpha=0.95,
+        fontsize=PANEL_LEGEND_FONT_SIZE,
+        borderpad=PANEL_LEGEND_BORDER_PAD,
+        labelspacing=PANEL_LEGEND_LABEL_SPACING,
+        handlelength=PANEL_LEGEND_HANDLE_LENGTH,
+        handletextpad=PANEL_LEGEND_HANDLE_TEXT_PAD,
+    )
 
     if show_lambda_note:
         ax.text(
@@ -871,12 +905,13 @@ def add_lambda_colorbar(
     colorbar = fig.colorbar(
         scalar_mappable,
         ax=axes,
-        fraction=0.040,
-        pad=0.020,
+        fraction=LAMBDA_COLORBAR_FRACTION,
+        pad=LAMBDA_COLORBAR_PAD,
     )
     colorbar.set_label(r"$c$ in $\lambda = c\,\lambda_{\max}$")
     colorbar.set_ticks(positive_scales)
     colorbar.set_ticklabels([f"{scale:g}" for scale in positive_scales])
+    colorbar.ax.tick_params(labelsize=9.6)
 
 
 def plot_lambda_sweep_figure(
@@ -910,8 +945,19 @@ def plot_lambda_sweep_figure(
 
     lambda_line_colors = lambda_colors(lambda_scales)
 
-    fig = plt.figure(figsize=(15.8, 4.35), constrained_layout=True)
-    grid = fig.add_gridspec(1, 3, width_ratios=[1.8, 1.45, 1.45], wspace=0.08)
+    fig = plt.figure(figsize=LAMBDA_SWEEP_FIGSIZE, constrained_layout=True)
+    fig.set_constrained_layout_pads(
+        w_pad=LAMBDA_SWEEP_CONSTRAINED_W_PAD,
+        h_pad=LAMBDA_SWEEP_CONSTRAINED_H_PAD,
+        wspace=LAMBDA_SWEEP_CONSTRAINED_WSPACE,
+        hspace=LAMBDA_SWEEP_CONSTRAINED_HSPACE,
+    )
+    grid = fig.add_gridspec(
+        1,
+        3,
+        width_ratios=LAMBDA_SWEEP_WIDTH_RATIOS,
+        wspace=LAMBDA_SWEEP_WSPACE,
+    )
     ax_state = fig.add_subplot(grid[0, 0])
     ax_local = fig.add_subplot(grid[0, 1])
     ax_global = fig.add_subplot(grid[0, 2])

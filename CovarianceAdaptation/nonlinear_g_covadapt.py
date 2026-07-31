@@ -105,6 +105,20 @@ DEFAULT_N_MC_EST = 1200
 DEFAULT_CALL_THRESHOLD = 0.50
 DEFAULT_POSTERIOR_ATTACK_THRESHOLD = 0.30
 DEFAULT_UPWARD_ATTACK_TOL = 1e-4
+G_LAMBDA_SWEEP_FIGSIZE = (22.4, 5.55)
+G_LAMBDA_SWEEP_WIDTH_RATIOS = [1.24, 1.0, 1.0]
+G_LAMBDA_SWEEP_W_PAD = 0.014
+G_LAMBDA_SWEEP_H_PAD = 0.014
+G_LAMBDA_SWEEP_WSPACE = 0.020
+G_LAMBDA_SWEEP_HSPACE = 0.020
+G_PANEL_LEGEND_FONT_SIZE = 11.0
+G_PANEL_LEGEND_TITLE_FONT_SIZE = 11.0
+G_PANEL_LEGEND_BORDER_PAD = 0.42
+G_PANEL_LEGEND_LABEL_SPACING = 0.54
+G_PANEL_LEGEND_HANDLE_TEXT_PAD = 0.58
+G_PANEL_LEGEND_HANDLE_LENGTH = 1.80
+G_COLORBAR_FRACTION = 0.034
+G_COLORBAR_PAD = 0.010
 
 
 # ============================================================
@@ -320,12 +334,13 @@ def add_lambda_colorbar(
     colorbar = fig.colorbar(
         scalar_mappable,
         ax=axes,
-        fraction=0.040,
-        pad=0.020,
+        fraction=G_COLORBAR_FRACTION,
+        pad=G_COLORBAR_PAD,
     )
     colorbar.set_label(r"$c$ in $\lambda = c\,\lambda_{\max}$")
     colorbar.set_ticks(positive_scales)
     colorbar.set_ticklabels([f"{scale:g}" for scale in positive_scales])
+    colorbar.ax.tick_params(labelsize=10.0)
 
 
 def lambda_max_from_observation_covariance(R_tk: np.ndarray) -> float:
@@ -1263,9 +1278,15 @@ def plot_g_call_summary_vs_lambda(
     fig, axes = plt.subplots(
         1,
         3,
-        figsize=(23.6, 5.9),
+        figsize=G_LAMBDA_SWEEP_FIGSIZE,
         constrained_layout=True,
-        gridspec_kw={"width_ratios": [1.28, 1.0, 1.0]},
+        gridspec_kw={"width_ratios": G_LAMBDA_SWEEP_WIDTH_RATIOS},
+    )
+    fig.set_constrained_layout_pads(
+        w_pad=G_LAMBDA_SWEEP_W_PAD,
+        h_pad=G_LAMBDA_SWEEP_H_PAD,
+        wspace=G_LAMBDA_SWEEP_WSPACE,
+        hspace=G_LAMBDA_SWEEP_HSPACE,
     )
     ax_prob, ax_attack_metrics, ax_clean_metrics = axes
     for ax in axes:
@@ -1357,7 +1378,11 @@ def plot_g_call_summary_vs_lambda(
         loc="lower right",
         frameon=True,
         framealpha=1.0,
-        fontsize=10.8,
+        fontsize=G_PANEL_LEGEND_FONT_SIZE,
+        borderpad=G_PANEL_LEGEND_BORDER_PAD,
+        labelspacing=G_PANEL_LEGEND_LABEL_SPACING,
+        handletextpad=G_PANEL_LEGEND_HANDLE_TEXT_PAD,
+        handlelength=G_PANEL_LEGEND_HANDLE_LENGTH,
         handler_map={MiniScaleLegendHandle: HandlerMiniScale()},
     )
     add_lambda_colorbar(fig=fig, axes=[ax_prob], lambda_scales=lambda_scales)
@@ -1694,12 +1719,13 @@ def plot_g_call_summary_vs_lambda(
             bbox_to_anchor=(0.98, upper_legend_y),
             frameon=True,
             framealpha=legend_frame_alpha,
-            borderpad=0.40,
-            labelspacing=0.52,
-            handletextpad=0.55,
-            fontsize=10.5,
+            borderpad=G_PANEL_LEGEND_BORDER_PAD,
+            labelspacing=G_PANEL_LEGEND_LABEL_SPACING,
+            handletextpad=G_PANEL_LEGEND_HANDLE_TEXT_PAD,
+            handlelength=G_PANEL_LEGEND_HANDLE_LENGTH,
+            fontsize=G_PANEL_LEGEND_FONT_SIZE,
             title="Left axis",
-            title_fontsize=10.5,
+            title_fontsize=G_PANEL_LEGEND_TITLE_FONT_SIZE,
         )
         rate_legend.get_frame().set_facecolor("white")
         rate_legend.get_frame().set_alpha(upper_legend_fill_alpha)
@@ -1717,12 +1743,13 @@ def plot_g_call_summary_vs_lambda(
             bbox_to_anchor=(0.98, lower_legend_y),
             frameon=True,
             framealpha=legend_frame_alpha,
-            borderpad=0.40,
-            labelspacing=0.52,
-            handletextpad=0.55,
-            fontsize=10.5,
+            borderpad=G_PANEL_LEGEND_BORDER_PAD,
+            labelspacing=G_PANEL_LEGEND_LABEL_SPACING,
+            handletextpad=G_PANEL_LEGEND_HANDLE_TEXT_PAD,
+            handlelength=G_PANEL_LEGEND_HANDLE_LENGTH,
+            fontsize=G_PANEL_LEGEND_FONT_SIZE,
             title="Right axis",
-            title_fontsize=10.5,
+            title_fontsize=G_PANEL_LEGEND_TITLE_FONT_SIZE,
         )
         local_legend.get_frame().set_facecolor("white")
         local_legend.get_frame().set_alpha(lower_legend_fill_alpha)
@@ -1750,7 +1777,7 @@ def plot_g_call_summary_vs_lambda(
         local_curve_color="#6E5AA6",
         right_side_labels=("false_negative",),
         rate_lower_override=-5.0,
-        local_baseline_xmax=1.4,
+        local_baseline_xmax=0.9,
     )
     draw_metrics_panel(
         ax_rate=ax_clean_metrics,
