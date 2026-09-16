@@ -1,0 +1,77 @@
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+[n200-resume] no partial files found; starting fresh extension run.
+[n200-resume] method 1/14 | Clean
+[n200-resume] Clean | episode 101/200
+[n200-resume] Clean | episode 200/200
+[n200-resume] saved partials for Clean
+[n200-resume] method 2/14 | Noisy + KF
+[n200-resume] Noisy + KF | episode 101/200
+[n200-resume] Noisy + KF | episode 200/200
+[n200-resume] saved partials for Noisy + KF
+[n200-resume] method 3/14 | PGD estimated, no defense
+[n200-resume] PGD estimated, no defense | episode 101/200
+[n200-resume] PGD estimated, no defense | episode 200/200
+[n200-resume] saved partials for PGD estimated, no defense
+[n200-resume] method 4/14 | PGD estimated + CovAdap, lambda=0.5
+[n200-resume] PGD estimated + CovAdap, lambda=0.5 | episode 101/200
+[n200-resume] PGD estimated + CovAdap, lambda=0.5 | episode 200/200
+[n200-resume] saved partials for PGD estimated + CovAdap, lambda=0.5
+[n200-resume] method 5/14 | PGD estimated + CovAdap, lambda=1
+[n200-resume] PGD estimated + CovAdap, lambda=1 | episode 101/200
+[n200-resume] PGD estimated + CovAdap, lambda=1 | episode 200/200
+[n200-resume] saved partials for PGD estimated + CovAdap, lambda=1
+[n200-resume] method 6/14 | PGD estimated + CovAdap, lambda=2
+[n200-resume] PGD estimated + CovAdap, lambda=2 | episode 101/200
+[n200-resume] PGD estimated + CovAdap, lambda=2 | episode 200/200
+[n200-resume] saved partials for PGD estimated + CovAdap, lambda=2
+[n200-resume] method 7/14 | PGD estimated + WoLF-IMQ
+[n200-resume] PGD estimated + WoLF-IMQ | episode 101/200
+[n200-resume] PGD estimated + WoLF-IMQ | episode 200/200
+[n200-resume] saved partials for PGD estimated + WoLF-IMQ
+[n200-resume] method 8/14 | PGD estimated + WoLF-TMD
+[n200-resume] PGD estimated + WoLF-TMD | episode 101/200
+[n200-resume] PGD estimated + WoLF-TMD | episode 200/200
+[n200-resume] saved partials for PGD estimated + WoLF-TMD
+[n200-resume] method 9/14 | Random contour, no defense
+[n200-resume] Random contour, no defense | episode 101/200
+[n200-resume] Random contour, no defense | episode 200/200
+[n200-resume] saved partials for Random contour, no defense
+[n200-resume] method 10/14 | Random contour + CovAdap, lambda=0.5
+[n200-resume] Random contour + CovAdap, lambda=0.5 | episode 101/200
+[n200-resume] Random contour + CovAdap, lambda=0.5 | episode 200/200
+[n200-resume] saved partials for Random contour + CovAdap, lambda=0.5
+[n200-resume] method 11/14 | Random contour + CovAdap, lambda=1
+[n200-resume] Random contour + CovAdap, lambda=1 | episode 101/200
+[n200-resume] Random contour + CovAdap, lambda=1 | episode 200/200
+[n200-resume] saved partials for Random contour + CovAdap, lambda=1
+[n200-resume] method 12/14 | Random contour + CovAdap, lambda=2
+[n200-resume] Random contour + CovAdap, lambda=2 | episode 101/200
+[n200-resume] Random contour + CovAdap, lambda=2 | episode 200/200
+[n200-resume] saved partials for Random contour + CovAdap, lambda=2
+[n200-resume] method 13/14 | Random contour + WoLF-IMQ
+[n200-resume] Random contour + WoLF-IMQ | episode 101/200
+[n200-resume] Random contour + WoLF-IMQ | episode 200/200
+[n200-resume] saved partials for Random contour + WoLF-IMQ
+[n200-resume] method 14/14 | Random contour + WoLF-TMD
+[n200-resume] Random contour + WoLF-TMD | episode 101/200
+[n200-resume] Random contour + WoLF-TMD | episode 200/200
+[n200-resume] saved partials for Random contour + WoLF-TMD
+[n200-resume] saved summary: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_defense_benchmark_eps95_delta0p94_n200_tune6_pgd2_mc4_summary.csv
+[n200-resume] saved diagnostics: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_defense_benchmark_eps95_delta0p94_n200_tune6_pgd2_mc4_diagnostics.csv
+[n200-resume] saved figures: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\figures\cartpole_defense_benchmark_eps95_delta0p94_n200_tune6_pgd2_mc4_returns.png | C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\figures\cartpole_defense_benchmark_eps95_delta0p94_n200_tune6_pgd2_mc4_dynamics.png
+                              method  mean_return  success_rate  num_runs
+                               Clean      500.000         1.000       200
+                          Noisy + KF      442.435         0.735       200
+           PGD estimated, no defense      215.110         0.130       200
+ PGD estimated + CovAdap, lambda=0.5      421.500         0.695       200
+   PGD estimated + CovAdap, lambda=1      443.795         0.730       200
+   PGD estimated + CovAdap, lambda=2      439.505         0.735       200
+            PGD estimated + WoLF-IMQ      328.140         0.365       200
+            PGD estimated + WoLF-TMD      398.190         0.550       200
+          Random contour, no defense      357.980         0.400       200
+Random contour + CovAdap, lambda=0.5      412.030         0.630       200
+  Random contour + CovAdap, lambda=1      427.255         0.685       200
+  Random contour + CovAdap, lambda=2      438.560         0.755       200
+           Random contour + WoLF-IMQ      380.510         0.505       200
+           Random contour + WoLF-TMD      315.415         0.305       200

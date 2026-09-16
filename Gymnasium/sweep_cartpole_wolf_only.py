@@ -30,9 +30,11 @@ What this script reports:
 Important implementation convention:
 1. The script reuses the exact CartPole model, predictor, attack construction,
    and WoLF update equations from `cartpole_covadapt_compare_epsilons_wolf.py`.
-2. It also uses the current no-fallback scenario and the recalibrated discount
+2. That shared model is now intentionally misspecified: the real CartPole
+   rollout advances with a finer internal step than the EKF transition.
+3. It also uses the current no-fallback scenario and the recalibrated discount
    factor, so results stay aligned with the latest CartPole experiment.
-3. All tuning grids are plain Python variables inside `main()`.
+4. All tuning grids are plain Python variables inside `main()`.
 """
 
 from __future__ import annotations
@@ -135,7 +137,7 @@ def rollout_episode_return_wolf_sweep(
     This mirrors the current benchmark logic, but it keeps only the WoLF branch
     and records the effective WoLF observation weights on attacked steps.
     """
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = cartpole_mod.reset_cartpole_rollout(env, seed=int(seed))
     summary = init_wolf_summary()
 
     rng_attack_gate = np.random.default_rng(int(seed) + 707_001)
@@ -165,7 +167,7 @@ def rollout_episode_return_wolf_sweep(
         ssm=ssm,
     )
 
-    obs, reward, terminated, truncated, _info = env.step(action)
+    obs, reward, terminated, truncated, _info = cartpole_mod.step_cartpole_rollout(env, action, ssm=ssm)
     ep_return += float(reward)
     if terminated or truncated:
         summary.return_sum += float(ep_return)
@@ -251,7 +253,7 @@ def rollout_episode_return_wolf_sweep(
             ssm=ssm,
         )
 
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = cartpole_mod.step_cartpole_rollout(env, action, ssm=ssm)
         ep_return += float(reward)
         step_idx += 1
 
@@ -361,7 +363,6 @@ def save_wolf_sweep_summary(
 
 def main() -> None:
     """Entry point for the standalone WoLF-only CartPole sweep."""
-    scenario_tag = "obs010-022-005-022_nofallback"
     device = "cpu"
     model_path = cartpole_mod.ensure_downloaded_cartpole_checkpoint()
 
@@ -369,7 +370,7 @@ def main() -> None:
     # directly comparable to the latest benchmark outputs.
     obs_noise_std = np.array([0.10, 0.22, 0.05, 0.22], dtype=float)
     attack_prob = 0.20
-    attack_eps_values = (5.39, 9.49)
+    attack_eps_values = (9.49,)
     discount_delta = cartpole_mod.DEFAULT_GYMNASIUM_DISCOUNT_DELTA
     kf_meas_std = obs_noise_std.copy()
     kf_proc_std = np.array([0.320, 0.720, 0.160, 0.720], dtype=float)
@@ -408,14 +409,6 @@ def main() -> None:
     imq_soft_threshold_values = (0.35, 0.40, 0.45, 0.50, 0.60)
     tmd_threshold_values = (2.6, 2.7, 2.8, 2.9, 3.0)
 
-    print(f"scenario_tag = {scenario_tag}")
-    print(f"n_episodes = {n_episodes}")
-    print(f"seed0 = {seed0}")
-    print(f"attack_prob = {attack_prob}")
-    print(f"pgd_steps = {pgd_steps}")
-    print(f"pgd_step_size = {pgd_step_size}")
-    print(f"discount_delta = {discount_delta}")
-
     sweep_configs: list[WolfSweepConfig] = []
     sweep_configs.extend(
         [
@@ -442,6 +435,14 @@ def main() -> None:
 
     model = cartpole_mod.load_cartpole_policy(model_path, torch.device(device))
     ssm = cartpole_mod.build_cartpole_linear_ssm()
+    scenario_tag = f"obs010-022-005-022_nofallback_{cartpole_mod.cartpole_model_tag(ssm)}"
+    print(f"scenario_tag = {scenario_tag}")
+    print(f"n_episodes = {n_episodes}")
+    print(f"seed0 = {seed0}")
+    print(f"attack_prob = {attack_prob}")
+    print(f"pgd_steps = {pgd_steps}")
+    print(f"pgd_step_size = {pgd_step_size}")
+    print(f"discount_delta = {discount_delta}")
     R, _legacy_Q = cartpole_mod.build_filter_covariances(
         meas_std=kf_meas_std,
         proc_std=kf_proc_std,

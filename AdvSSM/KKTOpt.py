@@ -4,15 +4,11 @@ KKTOpt.py
 
 End-to-end ND LGSSM + leave-one-out (p(y_t | y_-t)) + "image-formula" X_t
 + KKT adversarial optimization at a fixed time t (default t=5)
-+ Beautiful figure with 4 panels:
-
-LEFT COLUMN:
-  (1) Observation-space geometry (ellipses + mu_t, y_t, y*)
-  (2) State component x1 (component 0) over time with CI (base vs adversarial)
-  (3) State component x2 (component 1) over time with CI (base vs adversarial)
-
-RIGHT COLUMN:
-  (4) State-space trajectory (x1 vs x2) WITHOUT CI (true vs base vs adversarial)
++ Figure with 4 panels, read left-to-right and top-to-bottom:
+  (1) State component s1 over time with CI (base vs adversarial)
+  (2) Observation-space geometry (ellipses + mu_t, y_t, y*)
+  (3) State component s2 over time with CI (base vs adversarial)
+  (4) State-space trajectory (s1 vs s2) without CI
 
 Notes:
 - This script expects n_y = 2 for the ellipse panel.
@@ -139,13 +135,13 @@ def plot_attack_figure_four_panels(
     outpath: str,
 ) -> None:
     """
-    NUEVO layout (2x2):
+    Layout (2x2), read left-to-right and then top-to-bottom:
       Top row:
-        (A) x1 vs time (con CI)
-        (B) x2 vs time (con CI)
+        (A) s1 vs time (with confidence interval)
+        (B) Attack geometry (ellipses in observation space)
       Bottom row:
-        (C) Geometría del ataque (elipses en y-space)
-        (D) Trayectoria en espacio de estados (x1 vs x2)
+        (C) s2 vs time (with confidence interval)
+        (D) State-space trajectory (s1 vs s2)
     """
     if y_t.shape != (2,) or mu_t.shape != (2,) or y_star.shape != (2,):
         raise ValueError("This plot expects n_y=2 (y_t/mu_t/y_star must be shape (2,)).")
@@ -227,13 +223,12 @@ def plot_attack_figure_four_panels(
         wspace=0.04, hspace=0.035,
     )
 
-    # ARRIBA: series temporales
-    ax_ts1 = fig.add_subplot(gs[0, 0])   # x1 vs t
-    ax_ts2 = fig.add_subplot(gs[0, 1])   # x2 vs t
-
-    # ABAJO: elipses + trayectoria
-    ax_geom = fig.add_subplot(gs[1, 0])  # geometry ellipses
-    ax_traj = fig.add_subplot(gs[1, 1])  # state-space x1 vs x2
+    # Read the panels from left to right and then top to bottom:
+    # s1 impact, observation-space ellipses, s2 impact, and state path.
+    ax_ts1 = fig.add_subplot(gs[0, 0])   # s1 vs time
+    ax_geom = fig.add_subplot(gs[0, 1])  # geometry ellipses
+    ax_ts2 = fig.add_subplot(gs[1, 0])   # s2 vs time
+    ax_traj = fig.add_subplot(gs[1, 1])  # state-space s1 vs s2
 
     for ax in [ax_ts1, ax_ts2, ax_geom, ax_traj]:
         try:
@@ -243,7 +238,7 @@ def plot_attack_figure_four_panels(
         ax.set_box_aspect(0.62)
 
     # =========================================================
-    # TOP ROW: time-series panels (x1 and x2)
+    # TIME-SERIES PANELS: s1 at top-left and s2 at bottom-left
     # =========================================================
     def _plot_state_time(ax, idx: int, state_label: str) -> None:
         x_line = x_true[:, idx]
@@ -298,7 +293,7 @@ def plot_attack_figure_four_panels(
     _plot_state_time(ax_ts2, idx=1, state_label="s_2")
 
     # =========================================================
-    # BOTTOM-LEFT: geometry (ellipses)
+    # TOP-RIGHT: geometry (ellipses)
     # =========================================================
     Sigma_t = project_to_psd(Sigma_t)
     Sigma_inv = inv_psd(Sigma_t)

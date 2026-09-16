@@ -5,7 +5,13 @@ __pycache__/
 .venv/
 .env
 
-
 # VS Code / IDEs
 .vscode/
 .idea/
+
+# Generated experiment data
+Gymnasium/outputs/data/*.csv
+
+# Agents configuration/instructions
+AGENTS.md
+agents.md

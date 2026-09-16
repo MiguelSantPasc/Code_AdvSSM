@@ -64,7 +64,9 @@ Discounted-covariance rationale:
    keeps it unchanged.
 
 Experimental protocol:
-1. The clean environment dynamics are Gymnasium's native CartPole dynamics.
+1. The clean environment dynamics are a finer-step CartPole rollout:
+   the plant is integrated internally with `tau_real = 0.01` while the EKF
+   keeps the coarser nominal step `tau_filter = 0.02`.
 2. Comparable randomness across methods is enforced with shared seeds and with
    separate RNG streams for:
    - additive observation noise,
@@ -252,7 +254,7 @@ def build_default_config() -> BenchmarkConfig:
         n_tuning_episodes=int(N_TUNING_EPISODES),
         n_episodes=int(N_EPISODES),
         seed0=int(BASE_SEED),
-        scenario_tag="obs010-022-005-022_nofallback",
+        scenario_tag="obs010-022-005-022_nofallback_real001_filter002_sub2",
     )
 
 
@@ -285,6 +287,15 @@ def build_benchmark_methods(
     wolf_params: dict[str, dict[str, Any]],
 ) -> list[BenchmarkMethod]:
     """Return the ordered list of benchmark methods."""
+    def selected_wolf_parameters(*, kind: str, attack_type: str) -> dict[str, Any]:
+        """Return the scenario-specific WoLF parameters, with legacy fallback."""
+        scenario_suffix = "random" if attack_type == "random_contour" else "pgd"
+        scenario_key = f"wolf_{kind}_{scenario_suffix}"
+        legacy_key = f"wolf_{kind}"
+        if scenario_key in wolf_params:
+            return dict(wolf_params[scenario_key]["selected_parameters"])
+        return dict(wolf_params[legacy_key]["selected_parameters"])
+
     methods = [
         BenchmarkMethod(name="Clean", attack_type="clean", filter_type="clean"),
         BenchmarkMethod(name="Noisy + KF", attack_type="none", filter_type="kf"),
@@ -305,7 +316,7 @@ def build_benchmark_methods(
             attack_type="pgd_estimated",
             filter_type="wolf_imq",
             wolf_kind="imq",
-            wolf_parameters=dict(wolf_params["wolf_imq"]["selected_parameters"]),
+            wolf_parameters=selected_wolf_parameters(kind="imq", attack_type="pgd_estimated"),
         )
     )
     methods.append(
@@ -314,7 +325,7 @@ def build_benchmark_methods(
             attack_type="pgd_estimated",
             filter_type="wolf_tmd",
             wolf_kind="tmd",
-            wolf_parameters=dict(wolf_params["wolf_tmd"]["selected_parameters"]),
+            wolf_parameters=selected_wolf_parameters(kind="tmd", attack_type="pgd_estimated"),
         )
     )
     methods.append(
@@ -335,7 +346,7 @@ def build_benchmark_methods(
             attack_type="random_contour",
             filter_type="wolf_imq",
             wolf_kind="imq",
-            wolf_parameters=dict(wolf_params["wolf_imq"]["selected_parameters"]),
+            wolf_parameters=selected_wolf_parameters(kind="imq", attack_type="random_contour"),
         )
     )
     methods.append(
@@ -344,7 +355,7 @@ def build_benchmark_methods(
             attack_type="random_contour",
             filter_type="wolf_tmd",
             wolf_kind="tmd",
-            wolf_parameters=dict(wolf_params["wolf_tmd"]["selected_parameters"]),
+            wolf_parameters=selected_wolf_parameters(kind="tmd", attack_type="random_contour"),
         )
     )
     return methods
@@ -380,7 +391,10 @@ def success_from_episode(
 def build_wolf_sweep_configurations() -> list[dict[str, Any]]:
     """Return the CartPole WoLF hyperparameter grid used before the final benchmark."""
     configs: list[dict[str, Any]] = []
-    for value in (0.35, 0.40, 0.45, 0.50, 0.60):
+    # The richer IMQ grid keeps extra density around the previously strongest
+    # region near `tau ~= 0.45` while still probing milder and stronger
+    # discounting.
+    for value in (0.30, 0.35, 0.375, 0.40, 0.425, 0.45, 0.475, 0.50, 0.55, 0.60, 0.65):
         configs.append(
             {
                 "config_label": f"wolf_imq_tau_{str(value).replace('.', 'p')}",
@@ -390,7 +404,8 @@ def build_wolf_sweep_configurations() -> list[dict[str, Any]]:
                 "min_weight": 1e-6,
             }
         )
-    for value in (2.6, 2.7, 2.8, 2.9, 3.0):
+    # The richer TMD grid mirrors the same idea around `tau ~= 2.8`.
+    for value in (2.4, 2.5, 2.6, 2.7, 2.75, 2.8, 2.85, 2.9, 3.0, 3.1, 3.2):
         configs.append(
             {
                 "config_label": f"wolf_tmd_tau_{str(value).replace('.', 'p')}",
@@ -408,9 +423,10 @@ def rollout_clean_episode(
     model: cartpole_mod.DQN,
     *,
     seed: int,
+    ssm: cartpole_mod.CartPoleLinearSSM,
 ) -> MethodEpisodeResult:
     """Run the clean baseline with direct policy observations."""
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = cartpole_mod.reset_cartpole_rollout(env, seed=int(seed))
     diagnostics: list[StepDiagnostics] = []
     episode_return = 0.0
     steps = 0
@@ -436,7 +452,7 @@ def rollout_clean_episode(
                 wolf_heavily_discounted=False,
             )
         )
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = cartpole_mod.step_cartpole_rollout(env, action, ssm=ssm)
         episode_return += float(reward)
         steps += 1
         if terminated or truncated:
@@ -465,7 +481,7 @@ def rollout_benchmark_episode(
     device: str,
 ) -> MethodEpisodeResult:
     """Run one CartPole method rollout using the paired-noise benchmark protocol."""
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = cartpole_mod.reset_cartpole_rollout(env, seed=int(seed))
     diagnostics: list[StepDiagnostics] = []
     episode_return = 0.0
     total_state_error = 0.0
@@ -516,7 +532,7 @@ def rollout_benchmark_episode(
         ssm=ssm,
     )
 
-    obs, reward, terminated, truncated, _info = env.step(action)
+    obs, reward, terminated, truncated, _info = cartpole_mod.step_cartpole_rollout(env, action, ssm=ssm)
     episode_return += float(reward)
     if terminated or truncated:
         return MethodEpisodeResult(
@@ -668,7 +684,7 @@ def rollout_benchmark_episode(
             ssm=ssm,
         )
 
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = cartpole_mod.step_cartpole_rollout(env, action, ssm=ssm)
         episode_return += float(reward)
         step_idx += 1
         if terminated or truncated:
@@ -822,6 +838,98 @@ def selection_score_from_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def wolf_overall_score_table(full_df: pd.DataFrame) -> pd.DataFrame:
+    """Join the clean and attacked WoLF metrics into one configuration table."""
+    attacked_df = full_df.loc[full_df["scenario"].isin(["pgd_estimated", "random_contour"])]
+    attacked_grouped = attacked_df.groupby("config_label", sort=False).agg(
+        attacked_mean_return=("mean_return", "mean"),
+        attacked_mean_state_estimation_error=("mean_state_estimation_error", "mean"),
+        attacked_std_return=("std_return", "mean"),
+        attacked_success_rate=("success_rate", "mean"),
+    )
+    clean_grouped = full_df.loc[full_df["scenario"] == "no_attack"].groupby("config_label", sort=False).agg(
+        clean_mean_return=("mean_return", "mean"),
+        clean_mean_state_estimation_error=("mean_state_estimation_error", "mean"),
+        clean_std_return=("std_return", "mean"),
+        clean_success_rate=("success_rate", "mean"),
+    )
+    parameter_df = (
+        full_df.groupby("config_label", sort=False)[["kind", "imq_soft_threshold", "tmd_threshold"]]
+        .first()
+        .reset_index()
+    )
+    score_df = parameter_df.merge(attacked_grouped.reset_index(), on="config_label", how="left")
+    score_df = score_df.merge(clean_grouped.reset_index(), on="config_label", how="left")
+    score_df["overall_mean_return"] = (
+        score_df["clean_mean_return"] + 2.0 * score_df["attacked_mean_return"]
+    ) / 3.0
+    return score_df
+
+
+def clean_selection_ranking(full_df: pd.DataFrame) -> pd.DataFrame:
+    """Rank WoLF configurations by clean robustness before the attacked tie-breakers."""
+    ranking_df = wolf_overall_score_table(full_df)
+    return ranking_df.sort_values(
+        by=[
+            "clean_mean_return",
+            "attacked_mean_return",
+            "attacked_mean_state_estimation_error",
+            "attacked_std_return",
+        ],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+
+
+def adversarial_selection_ranking(full_df: pd.DataFrame) -> pd.DataFrame:
+    """Rank WoLF configurations by attacked robustness with clean performance as a tie-breaker."""
+    ranking_df = wolf_overall_score_table(full_df)
+    return ranking_df.sort_values(
+        by=[
+            "attacked_mean_return",
+            "attacked_mean_state_estimation_error",
+            "clean_mean_return",
+            "attacked_std_return",
+        ],
+        ascending=[False, True, False, True],
+    ).reset_index(drop=True)
+
+
+def selection_payload_from_row(row: pd.Series) -> dict[str, Any]:
+    """Convert one ranked WoLF row into the persisted JSON payload format."""
+    return {
+        "config_label": str(row["config_label"]),
+        "selected_parameters": {
+            "kind": str(row["kind"]),
+            "imq_soft_threshold": float(row["imq_soft_threshold"]),
+            "tmd_threshold": float(row["tmd_threshold"]),
+            "min_weight": 1e-6,
+        },
+        "clean_mean_return": float(row["clean_mean_return"]),
+        "attacked_mean_return": float(row["attacked_mean_return"]),
+    }
+
+
+def select_distinct_clean_and_adversarial_wolf_parameters(
+    *,
+    full_df: pd.DataFrame,
+) -> dict[str, dict[str, Any]]:
+    """Select one best clean WoLF configuration and one distinct attacked configuration."""
+    clean_ranking_df = clean_selection_ranking(full_df)
+    adversarial_ranking_df = adversarial_selection_ranking(full_df)
+    if clean_ranking_df.empty or adversarial_ranking_df.empty:
+        raise RuntimeError("The WoLF sweep did not generate enough rows to rank clean and adversarial settings.")
+
+    clean_row = clean_ranking_df.iloc[0]
+    adversarial_candidates = adversarial_ranking_df.loc[
+        adversarial_ranking_df["config_label"] != clean_row["config_label"]
+    ]
+    adversarial_row = adversarial_candidates.iloc[0] if not adversarial_candidates.empty else adversarial_ranking_df.iloc[0]
+    return {
+        "wolf_clean": selection_payload_from_row(clean_row),
+        "wolf_adversarial": selection_payload_from_row(adversarial_row),
+    }
+
+
 def select_best_wolf_parameters(*, full_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Select the best IMQ and TMD WoLF configurations from the tuning table."""
     selected: dict[str, dict[str, Any]] = {}
@@ -840,6 +948,37 @@ def select_best_wolf_parameters(*, full_df: pd.DataFrame) -> dict[str, dict[str,
                 "min_weight": 1e-6,
             }
         }
+    return selected
+
+
+def select_best_wolf_parameters_per_scenario(*, full_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Select one best WoLF configuration for each `(scenario, kind)` pair."""
+    selected: dict[str, dict[str, Any]] = {}
+    for scenario_key, suffix in (("pgd_estimated", "pgd"), ("random_contour", "random")):
+        scenario_df = full_df.loc[full_df["scenario"] == scenario_key]
+        for kind_key in ("imq", "tmd"):
+            kind_df = scenario_df.loc[scenario_df["kind"] == kind_key]
+            if kind_df.empty:
+                raise RuntimeError(
+                    f"No WoLF sweep rows were generated for scenario={scenario_key}, kind={kind_key}."
+                )
+            ranking_df = kind_df.sort_values(
+                by=["mean_return", "mean_state_estimation_error", "std_return"],
+                ascending=[False, True, True],
+            )
+            best_row = ranking_df.iloc[0]
+            selected[f"wolf_{kind_key}_{suffix}"] = {
+                "config_label": str(best_row["config_label"]),
+                "selected_parameters": {
+                    "kind": kind_key,
+                    "imq_soft_threshold": float(best_row["imq_soft_threshold"]),
+                    "tmd_threshold": float(best_row["tmd_threshold"]),
+                    "min_weight": 1e-6,
+                },
+                "scenario": scenario_key,
+                "mean_return": float(best_row["mean_return"]),
+                "mean_state_estimation_error": float(best_row["mean_state_estimation_error"]),
+            }
     return selected
 
 
@@ -886,6 +1025,10 @@ def save_wolf_selection_artifacts(
     full_df: pd.DataFrame,
     ranking_df: pd.DataFrame,
     selected_parameters: dict[str, dict[str, Any]],
+    scenario_selected_parameters: dict[str, dict[str, Any]],
+    clean_ranking_df: pd.DataFrame,
+    adversarial_ranking_df: pd.DataFrame,
+    distinct_selection: dict[str, dict[str, Any]],
     output_prefix: str,
 ) -> dict[str, str]:
     """Save the CartPole WoLF sweep tables, figure, and selected-parameter JSON."""
@@ -893,17 +1036,29 @@ def save_wolf_selection_artifacts(
     figures_dir = figures_dir_for(CURRENT_DIR)
     full_csv_path = os.path.join(data_dir, f"{output_prefix}_full.csv")
     ranking_csv_path = os.path.join(data_dir, f"{output_prefix}_ranking.csv")
+    clean_ranking_csv_path = os.path.join(data_dir, f"{output_prefix}_clean_ranking.csv")
+    adversarial_ranking_csv_path = os.path.join(data_dir, f"{output_prefix}_adversarial_ranking.csv")
     figure_path = os.path.join(figures_dir, f"{output_prefix}.png")
     json_path = best_wolf_json_path(config)
 
     full_df.to_csv(full_csv_path, index=False)
     ranking_df.to_csv(ranking_csv_path, index=False)
+    clean_ranking_df.to_csv(clean_ranking_csv_path, index=False)
+    adversarial_ranking_df.to_csv(adversarial_ranking_csv_path, index=False)
     plot_wolf_benchmark_results(full_df=full_df, output_path=figure_path)
 
     payload = {
         "wolf_imq": selected_parameters["wolf_imq"],
         "wolf_tmd": selected_parameters["wolf_tmd"],
+        "wolf_imq_pgd": scenario_selected_parameters["wolf_imq_pgd"],
+        "wolf_imq_random": scenario_selected_parameters["wolf_imq_random"],
+        "wolf_tmd_pgd": scenario_selected_parameters["wolf_tmd_pgd"],
+        "wolf_tmd_random": scenario_selected_parameters["wolf_tmd_random"],
+        "wolf_clean": distinct_selection["wolf_clean"],
+        "wolf_adversarial": distinct_selection["wolf_adversarial"],
         "selection_metric": "maximize attacked mean return; tie-break by lower state error, better noisy return, lower return variability",
+        "scenario_selection_metric": "for each scenario and WoLF kind: maximize scenario mean return; tie-break by lower state error, then lower return variability",
+        "distinct_selection_metric": "clean: maximize no-attack mean return; adversarial: maximize attacked mean return, excluding the clean winner when possible",
         "coverage": float(config.coverage),
         "epsilon": float(config.attack_eps),
         "n_tuning_episodes": int(config.n_tuning_episodes),
@@ -915,6 +1070,8 @@ def save_wolf_selection_artifacts(
     return {
         "wolf_full_csv_path": full_csv_path,
         "wolf_ranking_csv_path": ranking_csv_path,
+        "wolf_clean_ranking_csv_path": clean_ranking_csv_path,
+        "wolf_adversarial_ranking_csv_path": adversarial_ranking_csv_path,
         "wolf_figure_path": figure_path,
         "wolf_json_path": json_path,
     }
@@ -1018,19 +1175,84 @@ def ensure_wolf_params_json(
         config=config,
     )
     selected_parameters = select_best_wolf_parameters(full_df=full_df)
+    scenario_selected_parameters = select_best_wolf_parameters_per_scenario(full_df=full_df)
+    clean_ranking_df = clean_selection_ranking(full_df)
+    adversarial_ranking_df = adversarial_selection_ranking(full_df)
+    distinct_selection = select_distinct_clean_and_adversarial_wolf_parameters(full_df=full_df)
     artifact_paths = save_wolf_selection_artifacts(
         config=config,
         full_df=full_df,
         ranking_df=ranking_df,
         selected_parameters=selected_parameters,
+        scenario_selected_parameters=scenario_selected_parameters,
+        clean_ranking_df=clean_ranking_df,
+        adversarial_ranking_df=adversarial_ranking_df,
+        distinct_selection=distinct_selection,
         output_prefix=output_prefix,
     )
     payload = {
         "wolf_imq": selected_parameters["wolf_imq"],
         "wolf_tmd": selected_parameters["wolf_tmd"],
+        "wolf_imq_pgd": scenario_selected_parameters["wolf_imq_pgd"],
+        "wolf_imq_random": scenario_selected_parameters["wolf_imq_random"],
+        "wolf_tmd_pgd": scenario_selected_parameters["wolf_tmd_pgd"],
+        "wolf_tmd_random": scenario_selected_parameters["wolf_tmd_random"],
+        "wolf_clean": distinct_selection["wolf_clean"],
+        "wolf_adversarial": distinct_selection["wolf_adversarial"],
     }
     print(f"[cartpole_wolf_benchmark] saved json: {artifact_paths['wolf_json_path']}")
     return payload, artifact_paths
+
+
+def run_wolf_only(
+    *,
+    config: BenchmarkConfig,
+    output_prefix: str,
+) -> dict[str, str]:
+    """Run only the standalone WoLF sweep and persist the richer ranking outputs."""
+    model_path = cartpole_mod.ensure_downloaded_cartpole_checkpoint()
+    model = cartpole_mod.load_cartpole_policy(model_path, torch.device("cpu"))
+    ssm = cartpole_mod.build_cartpole_linear_ssm()
+    R, _legacy_Q = cartpole_mod.build_filter_covariances(
+        meas_std=config.kf_meas_std,
+        proc_std=config.kf_proc_std,
+        meas_corr=config.kf_meas_corr,
+        proc_corr=config.kf_proc_corr,
+    )
+    print(
+        "[cartpole_wolf_benchmark] "
+        f"mode=wolf | output={output_prefix} | n_tuning_episodes={int(config.n_tuning_episodes)}"
+    )
+    full_df, ranking_df = run_wolf_sweep(
+        model=model,
+        ssm=ssm,
+        R=R,
+        config=config,
+    )
+    selected_parameters = select_best_wolf_parameters(full_df=full_df)
+    scenario_selected_parameters = select_best_wolf_parameters_per_scenario(full_df=full_df)
+    clean_ranking_df = clean_selection_ranking(full_df)
+    adversarial_ranking_df = adversarial_selection_ranking(full_df)
+    distinct_selection = select_distinct_clean_and_adversarial_wolf_parameters(full_df=full_df)
+    artifact_paths = save_wolf_selection_artifacts(
+        config=config,
+        full_df=full_df,
+        ranking_df=ranking_df,
+        selected_parameters=selected_parameters,
+        scenario_selected_parameters=scenario_selected_parameters,
+        clean_ranking_df=clean_ranking_df,
+        adversarial_ranking_df=adversarial_ranking_df,
+        distinct_selection=distinct_selection,
+        output_prefix=output_prefix,
+    )
+    print(
+        "[cartpole_wolf_benchmark] "
+        f"selected pgd/imq={scenario_selected_parameters['wolf_imq_pgd']['config_label']} | "
+        f"pgd/tmd={scenario_selected_parameters['wolf_tmd_pgd']['config_label']} | "
+        f"random/imq={scenario_selected_parameters['wolf_imq_random']['config_label']} | "
+        f"random/tmd={scenario_selected_parameters['wolf_tmd_random']['config_label']}"
+    )
+    return artifact_paths
 
 
 def plot_benchmark_results(
@@ -1399,7 +1621,7 @@ def run_full_benchmark(
             seed = int(config.seed0) + episode_index
             env = gym.make("CartPole-v1")
             if method.filter_type == "clean":
-                result = rollout_clean_episode(env, model, seed=seed)
+                result = rollout_clean_episode(env, model, seed=seed, ssm=ssm)
             else:
                 result = rollout_benchmark_episode(
                     env,
@@ -1478,6 +1700,7 @@ def run_full_benchmark(
 def parse_args() -> argparse.Namespace:
     """Parse the benchmark command-line arguments."""
     parser = argparse.ArgumentParser(description="CartPole defense benchmark.")
+    parser.add_argument("--mode", choices=("benchmark", "wolf"), default="benchmark")
     parser.add_argument("--n-tuning-episodes", type=int, default=None)
     parser.add_argument("--n-episodes", type=int, default=None)
     parser.add_argument("--coverage", type=float, default=None)
@@ -1515,8 +1738,12 @@ def main() -> None:
     """Run the CartPole defense benchmark and print the artifact paths."""
     args = parse_args()
     config = config_from_args(args)
-    output_prefix = args.output_prefix or default_output_prefix(config)
-    artifact_paths = run_full_benchmark(config=config, output_prefix=output_prefix)
+    if args.mode == "wolf":
+        output_prefix = args.output_prefix or default_wolf_output_prefix(config)
+        artifact_paths = run_wolf_only(config=config, output_prefix=output_prefix)
+    else:
+        output_prefix = args.output_prefix or default_output_prefix(config)
+        artifact_paths = run_full_benchmark(config=config, output_prefix=output_prefix)
     for label, path in artifact_paths.items():
         print(f"{label}: {path}")
 

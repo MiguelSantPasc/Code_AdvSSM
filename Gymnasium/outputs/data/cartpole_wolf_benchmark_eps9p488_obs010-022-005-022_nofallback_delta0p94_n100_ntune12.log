@@ -1,0 +1,76 @@
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+[cartpole_wolf_benchmark] mode=wolf | output=cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12 | n_tuning_episodes=12
+[cartpole_wolf_benchmark] wolf_imq_tau_0p3 | no_attack | mean_return=484.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p3 | pgd_estimated | mean_return=369.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p3 | random_contour | mean_return=391.917
+[cartpole_wolf_benchmark] wolf_imq_tau_0p35 | no_attack | mean_return=472.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p35 | pgd_estimated | mean_return=406.333
+[cartpole_wolf_benchmark] wolf_imq_tau_0p35 | random_contour | mean_return=411.917
+[cartpole_wolf_benchmark] wolf_imq_tau_0p375 | no_attack | mean_return=446.167
+[cartpole_wolf_benchmark] wolf_imq_tau_0p375 | pgd_estimated | mean_return=342.333
+[cartpole_wolf_benchmark] wolf_imq_tau_0p375 | random_contour | mean_return=379.333
+[cartpole_wolf_benchmark] wolf_imq_tau_0p4 | no_attack | mean_return=482.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p4 | pgd_estimated | mean_return=364.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p4 | random_contour | mean_return=407.083
+[cartpole_wolf_benchmark] wolf_imq_tau_0p425 | no_attack | mean_return=492.583
+[cartpole_wolf_benchmark] wolf_imq_tau_0p425 | pgd_estimated | mean_return=379.750
+[cartpole_wolf_benchmark] wolf_imq_tau_0p425 | random_contour | mean_return=372.750
+[cartpole_wolf_benchmark] wolf_imq_tau_0p45 | no_attack | mean_return=484.833
+[cartpole_wolf_benchmark] wolf_imq_tau_0p45 | pgd_estimated | mean_return=326.500
+[cartpole_wolf_benchmark] wolf_imq_tau_0p45 | random_contour | mean_return=385.333
+[cartpole_wolf_benchmark] wolf_imq_tau_0p475 | no_attack | mean_return=492.583
+[cartpole_wolf_benchmark] wolf_imq_tau_0p475 | pgd_estimated | mean_return=303.000
+[cartpole_wolf_benchmark] wolf_imq_tau_0p475 | random_contour | mean_return=405.667
+[cartpole_wolf_benchmark] wolf_imq_tau_0p5 | no_attack | mean_return=434.417
+[cartpole_wolf_benchmark] wolf_imq_tau_0p5 | pgd_estimated | mean_return=236.500
+[cartpole_wolf_benchmark] wolf_imq_tau_0p5 | random_contour | mean_return=403.083
+[cartpole_wolf_benchmark] wolf_imq_tau_0p55 | no_attack | mean_return=414.667
+[cartpole_wolf_benchmark] wolf_imq_tau_0p55 | pgd_estimated | mean_return=304.000
+[cartpole_wolf_benchmark] wolf_imq_tau_0p55 | random_contour | mean_return=339.667
+[cartpole_wolf_benchmark] wolf_imq_tau_0p6 | no_attack | mean_return=434.500
+[cartpole_wolf_benchmark] wolf_imq_tau_0p6 | pgd_estimated | mean_return=337.500
+[cartpole_wolf_benchmark] wolf_imq_tau_0p6 | random_contour | mean_return=393.833
+[cartpole_wolf_benchmark] wolf_imq_tau_0p65 | no_attack | mean_return=400.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p65 | pgd_estimated | mean_return=167.250
+[cartpole_wolf_benchmark] wolf_imq_tau_0p65 | random_contour | mean_return=401.250
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p4 | no_attack | mean_return=319.917
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p4 | pgd_estimated | mean_return=289.667
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p4 | random_contour | mean_return=256.500
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p5 | no_attack | mean_return=402.500
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p5 | pgd_estimated | mean_return=376.083
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p5 | random_contour | mean_return=316.417
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p6 | no_attack | mean_return=357.917
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p6 | pgd_estimated | mean_return=359.333
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p6 | random_contour | mean_return=352.583
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p7 | no_attack | mean_return=408.667
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p7 | pgd_estimated | mean_return=357.917
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p7 | random_contour | mean_return=365.917
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p75 | no_attack | mean_return=442.417
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p75 | pgd_estimated | mean_return=399.250
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p75 | random_contour | mean_return=357.500
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p8 | no_attack | mean_return=434.500
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p8 | pgd_estimated | mean_return=366.583
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p8 | random_contour | mean_return=349.333
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p85 | no_attack | mean_return=448.833
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p85 | pgd_estimated | mean_return=392.083
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p85 | random_contour | mean_return=356.167
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p9 | no_attack | mean_return=476.417
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p9 | pgd_estimated | mean_return=374.583
+[cartpole_wolf_benchmark] wolf_tmd_tau_2p9 | random_contour | mean_return=419.417
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p0 | no_attack | mean_return=404.750
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p0 | pgd_estimated | mean_return=412.667
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p0 | random_contour | mean_return=372.417
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p1 | no_attack | mean_return=464.250
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p1 | pgd_estimated | mean_return=77.083
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p1 | random_contour | mean_return=295.000
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p2 | no_attack | mean_return=453.667
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p2 | pgd_estimated | mean_return=81.583
+[cartpole_wolf_benchmark] wolf_tmd_tau_3p2 | random_contour | mean_return=301.333
+[cartpole_wolf_benchmark] selected clean=wolf_imq_tau_0p425 | selected adversarial=wolf_imq_tau_0p35
+wolf_full_csv_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12_full.csv
+wolf_ranking_csv_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12_ranking.csv
+wolf_clean_ranking_csv_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12_clean_ranking.csv
+wolf_adversarial_ranking_csv_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12_adversarial_ranking.csv
+wolf_figure_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\figures\cartpole_wolf_benchmark_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12.png
+wolf_json_path: C:\Users\Usuario\Desktop\Doctoradooo\AdvSSMs\Code_AdvSSM\Gymnasium\outputs\data\best_cartpole_wolf_params_eps9p488_obs010-022-005-022_nofallback_delta0p94_n100_ntune12.json

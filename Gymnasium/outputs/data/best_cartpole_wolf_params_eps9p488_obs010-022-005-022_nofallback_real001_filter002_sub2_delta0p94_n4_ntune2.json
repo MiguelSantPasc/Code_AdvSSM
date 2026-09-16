@@ -1,0 +1,98 @@
+{
+  "wolf_imq": {
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.35,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    }
+  },
+  "wolf_tmd": {
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 3.0,
+      "min_weight": 1e-06
+    }
+  },
+  "wolf_imq_pgd": {
+    "config_label": "wolf_imq_tau_0p35",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.35,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "scenario": "pgd_estimated",
+    "mean_return": 500.0,
+    "mean_state_estimation_error": 0.09849556401803998
+  },
+  "wolf_imq_random": {
+    "config_label": "wolf_imq_tau_0p35",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.35,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "scenario": "random_contour",
+    "mean_return": 457.5,
+    "mean_state_estimation_error": 0.08681234665480766
+  },
+  "wolf_tmd_pgd": {
+    "config_label": "wolf_tmd_tau_2p6",
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 2.6,
+      "min_weight": 1e-06
+    },
+    "scenario": "pgd_estimated",
+    "mean_return": 500.0,
+    "mean_state_estimation_error": 0.08670849085418389
+  },
+  "wolf_tmd_random": {
+    "config_label": "wolf_tmd_tau_2p4",
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 2.4,
+      "min_weight": 1e-06
+    },
+    "scenario": "random_contour",
+    "mean_return": 500.0,
+    "mean_state_estimation_error": 0.11107356871348742
+  },
+  "wolf_clean": {
+    "config_label": "wolf_imq_tau_0p35",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.35,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "clean_mean_return": 500.0,
+    "attacked_mean_return": 478.75
+  },
+  "wolf_adversarial": {
+    "config_label": "wolf_imq_tau_0p425",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.425,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "clean_mean_return": 500.0,
+    "attacked_mean_return": 478.5
+  },
+  "selection_metric": "maximize attacked mean return; tie-break by lower state error, better noisy return, lower return variability",
+  "scenario_selection_metric": "for each scenario and WoLF kind: maximize scenario mean return; tie-break by lower state error, then lower return variability",
+  "distinct_selection_metric": "clean: maximize no-attack mean return; adversarial: maximize attacked mean return, excluding the clean winner when possible",
+  "coverage": 0.95,
+  "epsilon": 9.487729036781154,
+  "n_tuning_episodes": 2,
+  "tuning_seeds": [
+    20260729,
+    20260730
+  ]
+}

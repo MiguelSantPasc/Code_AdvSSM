@@ -14,7 +14,12 @@ Why this environment is a good fit for the repository:
    reference SSM, but the actual predictor used by the defense is EKF-like:
    the nonlinear CartPole dynamics propagate the mean and a local Jacobian is
    recomputed at every step to propagate the covariance.
-3. The policy observes the full 4D state
+3. The real rollout is intentionally misspecified relative to that filter:
+   the plant is advanced with a finer internal Euler step (`tau_real = 0.01`)
+   while the EKF keeps a coarser one-step transition (`tau_filter = 0.02`).
+   That discretization gap is part of the transition uncertainty the filter
+   must carry.
+4. The policy observes the full 4D state
       s_t = [x_t, xdot_t, theta_t, thetadot_t],
    so the attacked quantity and the defended latent state live in the same
    coordinates, just like the 4D RL benchmark already present in the repo.
@@ -42,7 +47,7 @@ Reference inverted-pendulum SSM used here:
 
       H = I_4.
 
-2. Gymnasium integrates CartPole with Euler step `tau = 0.02`, so the upright
+2. The filter keeps Gymnasium's nominal Euler step `tau_filter = 0.02`, so the upright
    reference discrete model is
 
       s_{t+1} = A_d s_t + B_d F_t + q_t
@@ -50,10 +55,14 @@ Reference inverted-pendulum SSM used here:
 
    where
 
-      A_d = I + tau * A_c
-      B_d = tau * B_c.
+      A_d = I + tau_filter * A_c
+      B_d = tau_filter * B_c.
 
-3. During filtering we do not keep `A_d` and `B_d` fixed. Instead, at each
+3. The real system is advanced with two finer substeps of size
+   `tau_real = 0.01`, so one observation interval still spans `0.02` seconds
+   but the plant follows a more accurate discretization than the filter.
+
+4. During filtering we do not keep `A_d` and `B_d` fixed. Instead, at each
    time step we:
    - propagate the posterior mean through the nonlinear CartPole dynamics,
    - build local Jacobians `A_t` and `B_t` by finite differences,
@@ -111,6 +120,7 @@ from shared_ssm.covariance_experiments import style_axis
 
 
 DEFAULT_GYMNASIUM_DISCOUNT_DELTA = 0.94
+DEFAULT_REAL_CARTPOLE_TAU = 0.01
 
 
 def normalized_final_reward(series: np.ndarray, *, n_episodes: int) -> float:
@@ -174,6 +184,8 @@ class CartPoleLinearSSM:
     B_d: np.ndarray
     H: np.ndarray
     tau: float
+    real_tau: float
+    real_substeps: int
     gravity: float
     masscart: float
     masspole: float
@@ -181,23 +193,40 @@ class CartPoleLinearSSM:
     force_mag: float
 
 
-def build_cartpole_linear_ssm() -> CartPoleLinearSSM:
+def build_cartpole_linear_ssm(
+    *,
+    filter_tau: float | None = None,
+    real_tau: float = DEFAULT_REAL_CARTPOLE_TAU,
+) -> CartPoleLinearSSM:
     """
-    Build the local linearized SSM around the upright CartPole equilibrium.
+    Build the locally linearized filter SSM around the upright CartPole equilibrium.
 
-    The coefficients are derived from the exact Gymnasium CartPole equations and
-    then discretized with the same Euler step used by the environment.
+    The coefficients are derived from the exact Gymnasium CartPole equations,
+    but the real rollout and the filter intentionally use different time steps:
+    the plant uses the finer `real_tau`, while the EKF keeps the coarser
+    `filter_tau`.
     """
     env = gym.make("CartPole-v1")
     base_env = env.unwrapped
 
-    tau = float(base_env.tau)
+    env_tau = float(base_env.tau)
+    tau = float(env_tau if filter_tau is None else filter_tau)
     gravity = float(base_env.gravity)
     masscart = float(base_env.masscart)
     masspole = float(base_env.masspole)
     length = float(base_env.length)
     force_mag = float(base_env.force_mag)
     env.close()
+
+    if tau <= 0.0:
+        raise ValueError("filter_tau must be strictly positive.")
+    if real_tau <= 0.0:
+        raise ValueError("real_tau must be strictly positive.")
+
+    real_substeps_float = tau / float(real_tau)
+    real_substeps = int(round(real_substeps_float))
+    if real_substeps < 1 or not np.isclose(real_substeps_float, float(real_substeps), atol=1e-9):
+        raise ValueError("filter_tau must be an integer multiple of real_tau.")
 
     total_mass = masscart + masspole
     denom = length * (4.0 / 3.0 - masspole / total_mass)
@@ -236,6 +265,8 @@ def build_cartpole_linear_ssm() -> CartPoleLinearSSM:
         B_d=B_d,
         H=H,
         tau=tau,
+        real_tau=float(real_tau),
+        real_substeps=int(real_substeps),
         gravity=gravity,
         masscart=masscart,
         masspole=masspole,
@@ -248,7 +279,8 @@ def print_cartpole_ssm_summary(ssm: CartPoleLinearSSM) -> None:
     """Print the upright reference SSM used to initialize the EKF intuition."""
     np.set_printoptions(precision=8, suppress=True)
     print("CartPole upright reference SSM (the EKF predictor re-linearizes locally)")
-    print(f"tau = {ssm.tau:.4f}")
+    print(f"tau_filter = {ssm.tau:.4f}")
+    print(f"tau_real = {ssm.real_tau:.4f} ({ssm.real_substeps} fine substeps per filter step)")
     print("A_c =")
     print(ssm.A_c)
     print("B_c =")
@@ -535,9 +567,14 @@ def cartpole_discrete_dynamics(
     state: np.ndarray,
     force: float,
     ssm: CartPoleLinearSSM,
+    tau: float | None = None,
 ) -> np.ndarray:
     """
-    Propagate one CartPole state with the same Euler step as Gymnasium.
+    Propagate one CartPole state with one explicit Euler step.
+
+    By default this uses the filter step `ssm.tau`. The real rollout passes
+    the finer `ssm.real_tau` explicitly so the plant is integrated on a denser
+    grid than the EKF assumes.
     """
     x_pos, xdot, theta, thetadot = np.asarray(state, dtype=float).reshape(4)
     xacc, thetaacc = cartpole_continuous_accelerations(
@@ -545,12 +582,122 @@ def cartpole_discrete_dynamics(
         force=force,
         ssm=ssm,
     )
-    tau = float(ssm.tau)
+    tau = float(ssm.tau if tau is None else tau)
     x_next = x_pos + tau * xdot
     xdot_next = xdot + tau * xacc
     theta_next = theta + tau * thetadot
     thetadot_next = thetadot + tau * thetaacc
     return np.array([x_next, xdot_next, theta_next, thetadot_next], dtype=np.float32)
+
+
+def cartpole_real_dynamics(
+    *,
+    state: np.ndarray,
+    force: float,
+    ssm: CartPoleLinearSSM,
+) -> np.ndarray:
+    """
+    Propagate the real CartPole state over one coarse observation interval.
+
+    The action is held constant while the plant advances with
+    `ssm.real_substeps` finer Euler updates of size `ssm.real_tau`.
+    """
+    next_state = np.asarray(state, dtype=np.float32).reshape(4).copy()
+    for _ in range(int(ssm.real_substeps)):
+        next_state = cartpole_discrete_dynamics(
+            state=next_state,
+            force=force,
+            ssm=ssm,
+            tau=ssm.real_tau,
+        )
+    return next_state.astype(np.float32)
+
+
+def cartpole_is_terminated(state: np.ndarray, env: gym.Env) -> bool:
+    """Return whether one CartPole state violates the environment thresholds."""
+    base_env = env.unwrapped
+    x_pos, _xdot, theta, _thetadot = np.asarray(state, dtype=float).reshape(4)
+    return bool(
+        x_pos < -float(base_env.x_threshold)
+        or x_pos > float(base_env.x_threshold)
+        or theta < -float(base_env.theta_threshold_radians)
+        or theta > float(base_env.theta_threshold_radians)
+    )
+
+
+def reset_cartpole_rollout(env: gym.Env, *, seed: int) -> tuple[np.ndarray, dict]:
+    """
+    Reset one CartPole rollout and initialize the coarse-step counter.
+
+    The rollout step is implemented in this module rather than delegated to
+    `env.step()` so that we can keep the finer real integration while leaving
+    the filter on the coarser nominal step.
+    """
+    obs, info = env.reset(seed=int(seed))
+    setattr(env, "_advssm_coarse_steps", 0)
+    return np.asarray(obs, dtype=np.float32), info
+
+
+def step_cartpole_rollout(
+    env: gym.Env,
+    action: int,
+    *,
+    ssm: CartPoleLinearSSM,
+) -> tuple[np.ndarray, float, bool, bool, dict]:
+    """
+    Advance one real CartPole rollout with the finer misspecified transition.
+
+    The observation/control horizon remains the original CartPole one. The
+    latent state, however, is evolved through the more accurate internal
+    substeps, and the coarse time-limit counter is tracked explicitly here.
+    """
+    base_env = env.unwrapped
+    if base_env.state is None:
+        raise RuntimeError("Call reset before stepping the custom CartPole rollout.")
+
+    force = action_to_force(action, ssm.force_mag)
+    state = np.asarray(base_env.state, dtype=np.float32).reshape(4).copy()
+    next_state = state.copy()
+    terminated = False
+
+    for _ in range(int(ssm.real_substeps)):
+        next_state = cartpole_discrete_dynamics(
+            state=next_state,
+            force=force,
+            ssm=ssm,
+            tau=ssm.real_tau,
+        )
+        if cartpole_is_terminated(next_state, env):
+            terminated = True
+            break
+
+    base_env.state = np.asarray(next_state, dtype=np.float64)
+
+    coarse_steps = int(getattr(env, "_advssm_coarse_steps", 0)) + 1
+    setattr(env, "_advssm_coarse_steps", coarse_steps)
+    max_steps = int(getattr(env.spec, "max_episode_steps", 500) or 500)
+    truncated = bool((coarse_steps >= max_steps) and not terminated)
+
+    if not terminated:
+        reward = 0.0 if bool(getattr(base_env, "_sutton_barto_reward", False)) else 1.0
+    elif base_env.steps_beyond_terminated is None:
+        base_env.steps_beyond_terminated = 0
+        reward = -1.0 if bool(getattr(base_env, "_sutton_barto_reward", False)) else 1.0
+    else:
+        base_env.steps_beyond_terminated += 1
+        reward = -1.0 if bool(getattr(base_env, "_sutton_barto_reward", False)) else 0.0
+
+    obs = np.asarray(next_state, dtype=np.float32)
+    if isinstance(env, gym.ObservationWrapper):
+        obs = np.asarray(env.observation(obs), dtype=np.float32)
+    return obs, float(reward), bool(terminated), bool(truncated), {}
+
+
+def cartpole_model_tag(ssm: CartPoleLinearSSM) -> str:
+    """Return a filename-safe tag for the real/filter time-scale split."""
+    real_tag = str(float(ssm.real_tau)).replace(".", "p")
+    filter_tag = str(float(ssm.tau)).replace(".", "p")
+    return f"real{real_tag}_filter{filter_tag}_sub{int(ssm.real_substeps)}"
 
 
 def linearize_cartpole_discrete_dynamics(
@@ -998,14 +1145,15 @@ def rollout_episode_return_clean(
     model: DQN,
     *,
     seed: int,
+    ssm: CartPoleLinearSSM,
 ) -> float:
     """Evaluate the clean pretrained policy without any defense layer."""
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = reset_cartpole_rollout(env, seed=int(seed))
     ep_return = 0.0
 
     while True:
         action = select_action(model, obs)
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = step_cartpole_rollout(env, action, ssm=ssm)
         ep_return += float(reward)
         if terminated or truncated:
             break
@@ -1024,7 +1172,7 @@ def rollout_episode_return_noisy_kf(
     discount_delta: float,
 ) -> float:
     """Evaluate under noisy observations with the shared discounted predictor."""
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = reset_cartpole_rollout(env, seed=int(seed))
 
     m_pred = np.asarray(obs, dtype=np.float32).copy()
     P_pred = project_to_psd(R.copy())
@@ -1048,7 +1196,7 @@ def rollout_episode_return_noisy_kf(
             ssm=ssm,
         )
 
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = step_cartpole_rollout(env, action, ssm=ssm)
         ep_return += float(reward)
         if terminated or truncated:
             break
@@ -1094,7 +1242,7 @@ def rollout_episode_return_attacked(
        - the PGD attack starts from that same noisy observation,
        - the random baseline samples a random point from the attack ellipsoid.
     """
-    obs, _info = env.reset(seed=int(seed))
+    obs, _info = reset_cartpole_rollout(env, seed=int(seed))
     fallback_stats = make_pgd_boundary_stats()
 
     rng_attack_gate = np.random.default_rng(int(seed) + 707_001)
@@ -1124,7 +1272,7 @@ def rollout_episode_return_attacked(
         ssm=ssm,
     )
 
-    obs, reward, terminated, truncated, _info = env.step(action)
+    obs, reward, terminated, truncated, _info = step_cartpole_rollout(env, action, ssm=ssm)
     ep_return += float(reward)
     if terminated or truncated:
         return float(ep_return), fallback_stats
@@ -1265,7 +1413,7 @@ def rollout_episode_return_attacked(
             ssm=ssm,
         )
 
-        obs, reward, terminated, truncated, _info = env.step(action)
+        obs, reward, terminated, truncated, _info = step_cartpole_rollout(env, action, ssm=ssm)
         ep_return += float(reward)
         step_idx += 1
 
@@ -1374,6 +1522,7 @@ def compute_accumulated_reward_data_with_wolf(
             env_clean,
             model,
             seed=seed,
+            ssm=ssm,
         )
         ret_noisy = rollout_episode_return_noisy_kf(
             env_noisy,
@@ -1812,8 +1961,8 @@ def plot_accumulated_reward_comparison_two_epsilons_with_wolf(
     method_colors.update(random_cov_colors)
 
     hatch_by_epsilon = {
-        float(epsilon_values[0]): "",
-        float(epsilon_values[1]): "//////" if len(epsilon_values) > 1 else "",
+        float(epsilon): ("" if eps_idx == 0 else "//////")
+        for eps_idx, epsilon in enumerate(epsilon_values)
     }
     if epsilon_display_values is None:
         epsilon_display_values = epsilon_values
@@ -2065,10 +2214,9 @@ def main() -> None:
     # benchmark while keeping the same PGD optimizer settings.
     obs_noise_std = np.array([0.10, 0.22, 0.05, 0.22], dtype=float)
     attack_prob = 0.20
-    # 4D chi-square radii corresponding approximately to 75% and 95%
-    # predictive-ellipsoid coverage.
-    attack_eps_values = (5.39, 9.49)
-    attack_eps_display_values = (0.75, 0.95)
+    # Focus the rerun on the 95% predictive-ellipsoid coverage case.
+    attack_eps_values = (9.49,)
+    attack_eps_display_values = (0.95,)
     discount_delta = DEFAULT_GYMNASIUM_DISCOUNT_DELTA
 
     # The attack geometry now follows the AdvSSM convention:
@@ -2122,10 +2270,9 @@ def main() -> None:
     wolf_imq_soft_threshold_random = 0.45
     wolf_tmd_threshold_attack = 3.0
     wolf_tmd_threshold_random = 2.6
-    force_cache = True
-    scenario_tag = "obs010-022-005-022_nofallback"
-
     ssm = build_cartpole_linear_ssm()
+    force_cache = False
+    scenario_tag = f"obs010-022-005-022_nofallback_{cartpole_model_tag(ssm)}"
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
     c_tag = "-".join(f"{value:g}" for value in c_scales).replace(".", "p")
