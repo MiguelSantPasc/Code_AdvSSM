@@ -32,16 +32,28 @@ Important implementation convention:
    and WoLF update equations from `cartpole_covadapt_compare_epsilons_wolf.py`.
 2. That shared model is now intentionally misspecified: the real CartPole
    rollout advances with a finer internal step than the EKF transition.
-3. It also uses the current no-fallback scenario and the recalibrated discount
-   factor, so results stay aligned with the latest CartPole experiment.
+3. It uses the current no-fallback scenario and retains the earlier covariance
+   discount, without claiming a fresh calibration for the centered policy.
 4. All tuning grids are plain Python variables inside `main()`.
+5. PGD now scores induced discrete actions by their Bellman return from the
+   fixed KF estimate of the observation before manipulation, matching RL's
+   estimated-return objective. A softmax surrogate supplies search gradients;
+   the actual greedy actions determine candidate scores and executed control.
+   The scenario tag prevents mixing these results with the old value attack.
+6. Every configuration now uses the centered DQN, cart stops at +/-2.4 m,
+   and reward 1 - 0.8*(x_next/2.4)^2. Episodes end at the first angle failure.
+   The checkpoint, physical model and all search settings are fingerprinted
+   and saved with the data. The hard score averages posterior-sample actions;
+   the deployed action is still greedy at the defended posterior mean.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import json
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -128,6 +140,7 @@ def rollout_episode_return_wolf_sweep(
     pgd_steps: int,
     pgd_step_size: float,
     mc_samples: int,
+    policy_temperature: float,
     pgd_boundary_tol: float,
     device: str,
 ) -> tuple[float, WolfModeSummary]:
@@ -187,7 +200,7 @@ def rollout_episode_return_wolf_sweep(
         if do_attack:
             summary.attack_attempts += 1
             if attack_mode == "pgd":
-                y_used, _obj_star, _m_post_attack, _P_post_attack = cartpole_mod.pgd_attack_on_expected_value(
+                y_used, _obj_star, _m_post_attack, _P_post_attack = cartpole_mod.estimated_return_pgd_attack_observation(
                     model=model,
                     obs_nom=y_noisy,
                     m_pred=m_pred,
@@ -199,7 +212,10 @@ def rollout_episode_return_wolf_sweep(
                     pgd_steps=pgd_steps,
                     pgd_step_size=pgd_step_size,
                     mc_samples=mc_samples,
+                    policy_temperature=policy_temperature,
                     rng_seed=int(seed) + 10_000 * step_idx,
+                    ssm=ssm, current_step_index=step_idx,
+                    max_episode_steps=int(env.spec.max_episode_steps or 500),
                     device=device,
                 )
                 eps_attack = cartpole_mod.mahalanobis_radius_sq(
@@ -309,11 +325,16 @@ def save_wolf_sweep_summary(
     pgd_step_size: float,
     pgd_boundary_tol: float,
     mc_samples: int,
+    policy_temperature: float,
     rows_by_epsilon: dict[float, list[dict[str, float | int | str]]],
+    experiment_metadata: dict,
 ) -> None:
     """Save the WoLF-only sweep as a compressed NPZ file."""
     payload: dict[str, object] = {
+        "experiment_json": np.asarray(json.dumps(experiment_metadata, sort_keys=True)),
         "scenario_tag": np.asarray(scenario_tag),
+        "attack_objective": np.asarray("nominal_kf_bellman_hard_actions_v1"),
+        "policy_temperature": float(policy_temperature),
         "attack_eps_values": np.asarray(attack_eps_values, dtype=float),
         "n_episodes": int(n_episodes),
         "seed0": int(seed0),
@@ -364,7 +385,13 @@ def save_wolf_sweep_summary(
 def main() -> None:
     """Entry point for the standalone WoLF-only CartPole sweep."""
     device = "cpu"
-    model_path = cartpole_mod.ensure_downloaded_cartpole_checkpoint()
+    torch.set_num_threads(1)
+    model_path = str(Path(CURRENT_DIR) / "outputs/saved_models/sb3_dqn_cartpole_centered_v1/dqn-CartPole-centered.zip")
+    wall_position = 2.4
+    wall_restitution = 0.0
+    center_reward_weight = 0.8
+    filter_tau = 0.02
+    real_tau = 0.01
 
     # Reuse the current CartPole attack scenario so the WoLF sweep stays
     # directly comparable to the latest benchmark outputs.
@@ -397,6 +424,7 @@ def main() -> None:
     pgd_steps = 20
     pgd_step_size = 0.34
     mc_samples = 64
+    policy_temperature = 1.0  # Gradient surrogate; scoring uses discrete actions.
     pgd_boundary_tol = 0.1
 
     # Use a slightly larger batch than the coarse sweep so the ranking is less
@@ -404,8 +432,8 @@ def main() -> None:
     n_episodes = 12
     seed0 = 100
 
-    # Fine sweep around the best regions found by the first coarse scan:
-    # IMQ looked strongest near 0.45, while TMD looked strongest near 2.8.
+    # Keep the historical grid, but measure it again with the centered policy;
+    # the former policy's best thresholds need not remain the best ones.
     imq_soft_threshold_values = (0.35, 0.40, 0.45, 0.50, 0.60)
     tmd_threshold_values = (2.6, 2.7, 2.8, 2.9, 3.0)
 
@@ -433,9 +461,22 @@ def main() -> None:
         ]
     )
 
+    ssm = cartpole_mod.build_cartpole_linear_ssm(
+        filter_tau=filter_tau, real_tau=real_tau, wall_position=wall_position,
+        wall_restitution=wall_restitution, center_reward_weight=center_reward_weight,
+    )
+    from train_cartpole_centered import verify_centered_checkpoint
+    verify_centered_checkpoint(Path(model_path), ssm=ssm)
     model = cartpole_mod.load_cartpole_policy(model_path, torch.device(device))
-    ssm = cartpole_mod.build_cartpole_linear_ssm()
-    scenario_tag = f"obs010-022-005-022_nofallback_{cartpole_mod.cartpole_model_tag(ssm)}"
+    model.policy.set_training_mode(False)
+    experiment = cartpole_mod.cartpole_experiment_metadata(ssm=ssm, model_path=model_path, settings=dict(
+        obs_noise_std=obs_noise_std, attack_prob=attack_prob, attack_eps_values=attack_eps_values,
+        discount_delta=discount_delta, kf_meas_std=kf_meas_std, kf_meas_corr=kf_meas_corr,
+        pgd_steps=pgd_steps, pgd_step_size=pgd_step_size, mc_samples=mc_samples,
+        policy_temperature=policy_temperature, pgd_boundary_tol=pgd_boundary_tol,
+        n_episodes=n_episodes, seed0=seed0, grid=[asdict(item) for item in sweep_configs],
+    ))
+    scenario_tag = cartpole_mod.cartpole_experiment_tag(experiment)
     print(f"scenario_tag = {scenario_tag}")
     print(f"n_episodes = {n_episodes}")
     print(f"seed0 = {seed0}")
@@ -481,6 +522,7 @@ def main() -> None:
                         pgd_steps=pgd_steps,
                         pgd_step_size=pgd_step_size,
                         mc_samples=mc_samples,
+                        policy_temperature=policy_temperature,
                         pgd_boundary_tol=pgd_boundary_tol,
                         device=device,
                     )
@@ -501,6 +543,7 @@ def main() -> None:
                         pgd_steps=pgd_steps,
                         pgd_step_size=pgd_step_size,
                         mc_samples=mc_samples,
+                        policy_temperature=policy_temperature,
                         pgd_boundary_tol=pgd_boundary_tol,
                         device=device,
                     )
@@ -560,7 +603,9 @@ def main() -> None:
         pgd_step_size=pgd_step_size,
         pgd_boundary_tol=pgd_boundary_tol,
         mc_samples=mc_samples,
+        policy_temperature=policy_temperature,
         rows_by_epsilon=rows_by_epsilon,
+        experiment_metadata=experiment,
     )
 
 

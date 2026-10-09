@@ -1,0 +1,86 @@
+{
+  "attack_objective": "nominal_kf_bellman_hard_actions_v1",
+  "environment": {
+    "center_reward_weight": 0.8,
+    "force_mag": 10.0,
+    "gravity": 9.8,
+    "length": 0.5,
+    "masscart": 1.0,
+    "masspole": 0.1,
+    "real_substeps": 2,
+    "real_tau": 0.01,
+    "tau": 0.02,
+    "theta_threshold_radians": 0.20943951023931953,
+    "wall_position": 2.4,
+    "wall_restitution": 0.0,
+    "x_threshold": 2.4
+  },
+  "model_path": "C:\\Users\\Usuario\\Desktop\\Doctoradooo\\AdvSSMs\\Code_AdvSSM\\Gymnasium\\outputs\\saved_models\\sb3_dqn_cartpole_centered_v1\\dqn-CartPole-centered.zip",
+  "model_sha256": "a8a26be86ea7c47dc70baa1c3e239f1e1d8349081176c161b76979c719b6e86e",
+  "protocol": "cartpole_centered_posterior_softsearch_v2",
+  "settings": {
+    "attack_eps_values": [
+      9.49
+    ],
+    "attack_prob": 0.2,
+    "c_scales": [
+      0.5,
+      1.0
+    ],
+    "delta_threshold": 0.2,
+    "discount_delta": 0.94,
+    "kf_meas_corr": [
+      [
+        1.0,
+        0.18,
+        0.06,
+        0.0
+      ],
+      [
+        0.18,
+        1.0,
+        0.14,
+        0.22
+      ],
+      [
+        0.06,
+        0.14,
+        1.0,
+        0.18
+      ],
+      [
+        0.0,
+        0.22,
+        0.18,
+        1.0
+      ]
+    ],
+    "kf_meas_std": [
+      0.1,
+      0.22,
+      0.05,
+      0.22
+    ],
+    "mc_samples": 64,
+    "n_episodes": 15,
+    "obs_noise_std": [
+      0.1,
+      0.22,
+      0.05,
+      0.22
+    ],
+    "omega_h": 0.5,
+    "omega_o": 0.5,
+    "pgd_boundary_tol": 0.1,
+    "pgd_step_size": 0.34,
+    "pgd_steps": 20,
+    "policy_temperature": 1.0,
+    "seed0": 100,
+    "wolf_thresholds": [
+      0.6,
+      0.45,
+      3.0,
+      2.6
+    ]
+  }
+}

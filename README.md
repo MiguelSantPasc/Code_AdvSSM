@@ -224,23 +224,189 @@ experiments in `AdvSSM/` and `AdvNonLinearAttack/`.
 
 ### `Gymnasium/`
 
-This folder adapts the shared attack/defense ideas to Gymnasium-based control
-problems, especially CartPole.
+This folder evaluates observation attacks and KF/covariance-adaptation/WoLF
+defenses on a **centered CartPole variant with physical end stops**. The videos
+and benchmark entry points use the same adapted discrete DQN and shared plant.
 
-The emphasis is on:
+#### Plant, reward and learned policy
 
-- observation attacks in a standard control benchmark,
-- CartPole covariance-adaptation and WoLF comparisons,
-- benchmark-style outputs with figures, CSV summaries, and cached data.
+The hidden state is $s_t=(x_t,\dot x_t,\theta_t,\dot\theta_t)$. The two actions
+apply forces of $-10$ N and $+10$ N; they are not continuous actions. Cart end
+stops constrain $x_t$ to $\pm2.4$ m. Inelastic contact stops outward cart motion
+and transfers the collision impulse to the pole. Inward motion remains possible;
+there is no pole/ground collision model.
 
-Representative scripts:
+The reward is evaluated at the resulting position:
 
-- `Gymnasium/cartpole_defense_benchmark.py`
-- `Gymnasium/cartpole_covadapt_compare_epsilons_wolf.py`
-- `Gymnasium/sweep_cartpole_wolf_only.py`
+$$
+r_t=1-0.8\left(\frac{x_{t+1}}{2.4}\right)^2.
+$$
 
-This is the bridge between the core SSM machinery and a familiar benchmark
-environment from control/RL tooling.
+It equals 1 at the center and 0.2 at either stop. Crossing $|\theta|>12^\circ$
+terminates an episode; wall contact does not. The maximum episode length is
+500 control steps. Return therefore differs from episode length, and success
+means reaching the time limit without angle termination. The plant uses two
+0.01 s Euler substeps per action; the EKF predictor uses one 0.02 s step.
+
+`Gymnasium/train_cartpole_centered.py` initializes a separate DQN from the
+original pretrained weights and trains it with this plant and reward. The
+current checkpoint was selected at 80,000 environment steps during a
+120,000-step training run, using validation seeds 901 and 902. Training uses
+true-state feedback; evaluation feeds the filtered estimate into the policy.
+It is not adversarial training. The original downloaded checkpoint is preserved.
+
+The network outputs two real-valued estimates $Q_\phi(s,0),Q_\phi(s,1)$.
+Executed actions use $\arg\max_a Q_\phi(m_t,a)$; there is no separate actor or
+value network. The value proxy is $\widehat V(s)=\max_a Q_\phi(s,a)$, with DQN
+discount $\gamma=0.99$. Policy weights remain fixed throughout attacks and
+benchmarks. The centered checkpoint and its training metadata are in
+`Gymnasium/outputs/saved_models/sb3_dqn_cartpole_centered_v1/`.
+
+#### Current observation attack: hard scores, soft search gradient
+
+Given the current prior $(m_T^-,P_T^-)$, first update the nominal KF using the
+original noisy observation $o_T^{\mathrm{nom}}$:
+
+$$
+K_T=P_T^-(P_T^-+R)^{-1},\qquad
+m_T^{\mathrm{nom}}=m_T^-+K_T(o_T^{\mathrm{nom}}-m_T^-).
+$$
+
+This reference is held fixed during the attack. It is an estimate, not the true
+simulator state. Its prior can contain effects of earlier attacks: only the
+current observation is unmanipulated in this reference update.
+
+For both actions, enumerate the deterministic transition from that reference:
+
+$$
+\bar s_{T+1}^{a}=f(m_T^{\mathrm{nom}},a),\qquad
+B_a=r(\bar s_{T+1}^{a})+
+\gamma\,\mathbf 1_{\mathrm{continuation}}\max_b Q_\phi(\bar s_{T+1}^{a},b).
+$$
+
+The transition includes the same end stops and fine integration as the plant.
+The indicator removes the bootstrap on angle termination or at the time limit.
+Both $B_a$ stay constant during observation optimization.
+
+An observation candidate $o$ must satisfy the predictive-ellipsoid constraint
+
+$$
+(o-m_T^-)^\top(P_T^-+R)^{-1}(o-m_T^-)\leq\rho_\epsilon.
+$$
+
+It induces the posterior mean $m_T(o)=m_T^-+K_T(o-m_T^-)$ and covariance
+$P_T^+$, which is independent of the candidate under this nominal KF update.
+With $N=64$, draw fixed base Gaussian samples $\xi_i$ and form
+$s_i(o)=m_T(o)+L_T\xi_i$, where $L_TL_T^\top=P_T^+$. The samples move with
+the candidate mean; the base random numbers are reused throughout the search.
+
+Candidate scoring uses discrete actions:
+
+$$
+\widehat J_{\mathrm{hard}}(o)
+=\frac1N\sum_i B_{\arg\max_a Q_\phi(s_i(o),a)}.
+$$
+
+Because this finite-sample score is piecewise constant, its argmax does not
+supply the search gradient. Instead, differentiate the surrogate
+
+$$
+\widetilde J(o)=\frac1N\sum_i\sum_a
+\operatorname{softmax}\!\left(Q_\phi(s_i(o),\cdot)/\tau_\pi\right)_a B_a,
+\qquad \tau_\pi=1.0.
+$$
+
+Run 20 projected gradient steps with step size 0.34, starting from the original
+noisy observation projected into the ellipsoid. Return the visited candidate
+with the lowest **hard** score; the soft score only breaks ties. Temperature 1
+is a fixed starting choice, not a calibrated optimum. This procedure is an
+approximate local search, not a reachability certificate or a global optimizer.
+
+The attacker scores actions across posterior samples, but the deployed agent
+chooses its single action at the **posterior mean**. These objectives are not
+identical: lowering the sampled score need not change the mean's greedy action.
+Softmax is used only for search and does not make deployed actions stochastic.
+For defended benchmark branches the attack is constructed using the nominal KF
+update, then the selected defense processes the manipulated observation.
+
+The random baseline samples uniformly inside the same ellipsoid; it is not
+restricted to the boundary despite the legacy `random_contour` method key.
+
+Defaults are attack probability 0.20 (excluding the initial observation),
+$\rho_\epsilon\simeq9.49$ for 95% four-dimensional coverage, and observation
+noise standard deviations $(0.10,0.22,0.05,0.22)$. Simulated sensor noise is
+independent across components, whereas the filter assumes the correlated $R$
+defined in each script. The covariance discount $\delta=0.94$ is separate from
+both $\gamma$ and $\tau_\pi$; it is retained from the earlier calibration, not
+recalibrated for the centered policy and stops.
+
+#### Entry points and reproducibility
+
+- `Gymnasium/cartpole_defense_benchmark.py`: 200 evaluation episodes per method;
+  retunes 22 WoLF configurations on 6 separate tuning seeds for each of the
+  no-attack, PGD and random-contour scenarios. Saves episode and diagnostic CSVs,
+  summary tables, NPZ data, a WoLF selection JSON and figures.
+  Selection completes before comparison starts. Eight process workers run
+  independent seeded episodes by default (`--workers 1` runs serially); a
+  three-step validation checked identical serial/worker results. The return
+  figure preserves the two-panel attack/random layout of the earlier n200
+  benchmark, and the dynamics figure shows the same two diagnostic densities.
+- `Gymnasium/cartpole_covadapt_compare_epsilons_wolf.py`: 15 episodes per method
+  with explicitly fixed WoLF reference thresholds; saves the grouped comparison
+  and its data. These thresholds are not claimed to be the newly tuned optimum.
+- `Gymnasium/sweep_cartpole_wolf_only.py`: 12 episodes per configuration, sweeping
+  5 IMQ and 5 TMD thresholds for PGD and random perturbations.
+- `Gymnasium/cartpole_videos.py`: seed-100 noisy+KF and noisy+attack videos at
+  0.25x playback, with translucent observations, visible stops and a center band.
+- `Gymnasium/cartpole_angle_density.py`: empirical true-pole-angle densities for
+  those trajectories, counting each physical step once.
+
+The benchmarks stop at the first episode failure. Videos alone continue the
+closed loop after failure to display the physical fall, without adding reward;
+the policy then operates outside its training termination range.
+
+```powershell
+.\.venv\Scripts\python.exe Gymnasium/cartpole_defense_benchmark.py
+.\.venv\Scripts\python.exe Gymnasium/cartpole_covadapt_compare_epsilons_wolf.py
+.\.venv\Scripts\python.exe Gymnasium/sweep_cartpole_wolf_only.py
+```
+
+Configuration values remain editable in each script. Benchmarks verify the
+checkpoint's reward and physics metadata before running. New artifacts use a
+`centered_...` identifier derived from the policy SHA-256, physical model and
+experiment settings; full metadata accompanies the data. Legacy results and
+WoLF selections are not reused for this variant. Returns from the old constant
+reward benchmark are not directly comparable with centered-reward returns.
+
+The 2026-09-29 WoLF rerun evaluated all 22 configurations in three scenarios,
+with six tuning seeds per configuration/scenario (396 episodes). Its four
+scenario-specific selections are:
+
+| Scenario | IMQ soft threshold | TMD threshold |
+|---|---:|---:|
+| Estimated-return PGD | 0.30 | 2.8 |
+| Random ellipsoid perturbation | 0.50 | 3.0 |
+
+These are defense thresholds, distinct from the attack softmax temperature
+$\tau_\pi=1$. Selection was checked against the full ranking table; the
+serial and parallel tuning results agree within CSV rounding precision.
+
+To reproduce this selection followed by the 200-episode, 14-method comparison:
+
+```powershell
+.\.venv\Scripts\python.exe Gymnasium/cartpole_defense_benchmark.py --mode wolf --n-episodes 200 --n-tuning-episodes 6 --pgd-steps 20 --mc-samples 64 --workers 8 --output-prefix cartpole_wolf_benchmark_centered_eps95_delta0p94_n200_tune6_pgd20_mc64
+.\.venv\Scripts\python.exe Gymnasium/cartpole_defense_benchmark.py --mode benchmark --n-episodes 200 --n-tuning-episodes 6 --pgd-steps 20 --mc-samples 64 --workers 8 --output-prefix cartpole_defense_benchmark_centered_eps95_delta0p94_n200_tune6_pgd20_mc64
+```
+
+The comparison retains the return and diagnostic layouts of the earlier
+`eps95_delta0p94_n200_tune6_pgd2_mc4` figures. Its new names use `centered` and
+`pgd20_mc64` to identify the actual reward/plant and attack budget; the original
+reference figures remain separate. The corresponding artifacts are:
+
+- [WoLF tuning table](Gymnasium/outputs/data/cartpole_wolf_benchmark_centered_eps95_delta0p94_n200_tune6_pgd20_mc64_full.csv)
+- [Selected WoLF parameters and metadata](Gymnasium/outputs/data/best_cartpole_wolf_params_centered_e80a52ed4706_n200_ntune6.json)
+- [Return comparison](Gymnasium/outputs/figures/cartpole_defense_benchmark_centered_eps95_delta0p94_n200_tune6_pgd20_mc64_returns.png)
+- [Diagnostic distributions](Gymnasium/outputs/figures/cartpole_defense_benchmark_centered_eps95_delta0p94_n200_tune6_pgd20_mc64_dynamics.png)
 
 ### `RL/`
 

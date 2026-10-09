@@ -1,0 +1,3 @@
+# Additional MP4 encoder for cartpole_videos.py (base packages: ../requirements.txt).
+# The wheel bundles FFmpeg, so a separate system installation is unnecessary.
+imageio-ffmpeg==0.6.0

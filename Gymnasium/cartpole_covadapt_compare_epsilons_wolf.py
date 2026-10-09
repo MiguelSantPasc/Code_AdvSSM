@@ -70,12 +70,30 @@ Reference inverted-pendulum SSM used here:
 
 Practical policy/critic note:
 1. The script does not train anything.
-2. It loads a pretrained DQN checkpoint downloaded from Hugging Face into
-   `Gymnasium/outputs/saved_models/sb3_dqn_cartpole_v1/`.
-3. The DQN `Q-network` acts as the critic. When the attack optimizes the
-   expected value under the defended posterior, it minimizes
+2. Its benchmark entry point loads the centered DQN adapted by
+   `train_cartpole_centered.py`, including physical end stops and the centered
+   reward. The original downloaded checkpoint is retained for initialization.
+3. The DQN `Q-network` provides V(s) = max_a Q(s, a). The attack follows
+   RL's estimated-return Bellman objective: a perceived posterior sample
+   chooses an action, but its consequences are evaluated from the FIXED KF
+   estimate obtained with the original noisy observation, before manipulation.
+   It minimizes E_{s~posterior(o_adv)}[B(m_nominal, argmax_a Q(s,a))], where
+   B(m,a) = r(f(m,a)) + gamma * 1_nonterminal * V(f(m,a)), with r=1 in
+   the standard benchmark. The real plant has no
+   process noise, so the two action returns can be enumerated exactly.
+4. Discrete argmax has no useful pathwise derivative. PGD uses hard actions
+   to score candidates and a softmax surrogate only to obtain search gradients.
+   Candidates are ranked by the HARD-action MC objective;
+   the soft value only breaks ties. This is a biased gradient approximation,
+   not a change to the deployed greedy policy or a guarantee of global optimality.
 
-      E[max_a Q(s_t, a) | o_t', history].
+Optional centered-rail variant (used by cartpole_videos.py):
+1. wall_position enables cart end stops, with an impulse coupled to the pole;
+   the same contacts are used by the plant, EKF prediction and attack model.
+2. center_reward_weight enables r = 1 - w*(x/wall_position)**2. Wall contact
+   does not end an episode; the pole-angle limit still does. The accompanying
+   train_cartpole_centered.py adapts a separate discrete DQN to this reward.
+3. Defaults keep the standard unbounded-track benchmark behavior.
 
 Figure layout:
 1. same three-panel grouped-bar layout as the RL covariance-adaptation
@@ -89,7 +107,10 @@ from __future__ import annotations
 import os
 import sys
 import urllib.request
-from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
+from dataclasses import asdict, dataclass
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -191,12 +212,20 @@ class CartPoleLinearSSM:
     masspole: float
     length: float
     force_mag: float
+    x_threshold: float
+    theta_threshold_radians: float
+    wall_position: float | None = None
+    wall_restitution: float = 0.0
+    center_reward_weight: float = 0.0
 
 
 def build_cartpole_linear_ssm(
     *,
     filter_tau: float | None = None,
     real_tau: float = DEFAULT_REAL_CARTPOLE_TAU,
+    wall_position: float | None = None,
+    wall_restitution: float = 0.0,
+    center_reward_weight: float = 0.0,
 ) -> CartPoleLinearSSM:
     """
     Build the locally linearized filter SSM around the upright CartPole equilibrium.
@@ -216,12 +245,18 @@ def build_cartpole_linear_ssm(
     masspole = float(base_env.masspole)
     length = float(base_env.length)
     force_mag = float(base_env.force_mag)
+    x_threshold = float(base_env.x_threshold)
+    theta_threshold_radians = float(base_env.theta_threshold_radians)
     env.close()
 
     if tau <= 0.0:
         raise ValueError("filter_tau must be strictly positive.")
     if real_tau <= 0.0:
         raise ValueError("real_tau must be strictly positive.")
+    if wall_position is not None and wall_position <= 0:
+        raise ValueError("The physical wall position must be positive.")
+    if not 0 <= wall_restitution <= 1 or not 0 <= center_reward_weight <= 1:
+        raise ValueError("Restitution and center reward weight must be in [0, 1].")
 
     real_substeps_float = tau / float(real_tau)
     real_substeps = int(round(real_substeps_float))
@@ -272,6 +307,11 @@ def build_cartpole_linear_ssm(
         masspole=masspole,
         length=length,
         force_mag=force_mag,
+        x_threshold=x_threshold,
+        theta_threshold_radians=theta_threshold_radians,
+        wall_position=wall_position,
+        wall_restitution=float(wall_restitution),
+        center_reward_weight=float(center_reward_weight),
     )
 
 
@@ -562,6 +602,34 @@ def cartpole_continuous_accelerations(
     return float(xacc), float(thetaacc)
 
 
+def apply_cartpole_wall_contact(state: np.ndarray, *, ssm: CartPoleLinearSSM) -> np.ndarray:
+    """Resolve cart/end-stop contact including the coupled pole impulse.
+
+    Walls constrain the cart center to +/-wall_position. Their normal impulse
+    sets outward cart velocity to -e*v (e=0 means an inelastic stop). With no
+    generalized impulse on the pole angle, the Gymnasium mass matrix gives
+    delta(theta_dot) = -3*cos(theta)/(4*l) * delta(x_dot). Thus a collision
+    transfers motion to the pole instead of independently clipping velocities.
+    Repeated outward pushes at a wall are resolved at each integration substep;
+    inward velocity is preserved, so the cart can leave the wall immediately.
+    The optional model concerns cart/end-stop contact, not pole/ground contact.
+    """
+    resolved = np.asarray(state, dtype=np.float32).copy()
+    if ssm.wall_position is None:
+        return resolved
+    wall = float(ssm.wall_position)
+    x, velocity, theta, angular_velocity = (float(value) for value in resolved)
+    if x <= -wall or x >= wall:
+        side = -1.0 if x < 0 else 1.0
+        resolved[0] = side * wall
+        if side * velocity > 0:
+            stopped_velocity = -float(ssm.wall_restitution) * velocity
+            angular_velocity -= 3.0 * np.cos(theta) / (4.0 * ssm.length) * (stopped_velocity - velocity)
+            resolved[1] = stopped_velocity
+            resolved[3] = angular_velocity
+    return resolved
+
+
 def cartpole_discrete_dynamics(
     *,
     state: np.ndarray,
@@ -587,7 +655,8 @@ def cartpole_discrete_dynamics(
     xdot_next = xdot + tau * xacc
     theta_next = theta + tau * thetadot
     thetadot_next = thetadot + tau * thetaacc
-    return np.array([x_next, xdot_next, theta_next, thetadot_next], dtype=np.float32)
+    next_state = np.array([x_next, xdot_next, theta_next, thetadot_next], dtype=np.float32)
+    return apply_cartpole_wall_contact(next_state, ssm=ssm)
 
 
 def cartpole_real_dynamics(
@@ -613,8 +682,30 @@ def cartpole_real_dynamics(
     return next_state.astype(np.float32)
 
 
-def cartpole_is_terminated(state: np.ndarray, env: gym.Env) -> bool:
+def cartpole_state_is_terminated(state: np.ndarray, *, ssm: CartPoleLinearSSM) -> bool:
+    """A wall is a contact constraint, not an artificial position failure."""
+    return bool(
+        abs(float(state[2])) > ssm.theta_threshold_radians
+        or (ssm.wall_position is None and abs(float(state[0])) > ssm.x_threshold)
+    )
+
+
+def cartpole_step_reward(state: np.ndarray, *, ssm: CartPoleLinearSSM) -> float:
+    """Reward survival and, when enabled, proximity to the center of the rail.
+
+    r = 1 - w * (x / wall_position)^2, including the terminal step. With w=0,
+    this is standard CartPole. The centered DQN is trained with w=0.8, making
+    r=1 at x=0 and r=0.2 at a stop. The return no longer equals the step count.
+    """
+    scale = ssm.x_threshold if ssm.wall_position is None else ssm.wall_position
+    relative_position = np.clip(float(state[0]) / float(scale), -1.0, 1.0)
+    return float(1.0 - ssm.center_reward_weight * relative_position**2)
+
+
+def cartpole_is_terminated(state: np.ndarray, env: gym.Env, *, ssm: CartPoleLinearSSM | None = None) -> bool:
     """Return whether one CartPole state violates the environment thresholds."""
+    if ssm is not None:
+        return cartpole_state_is_terminated(state, ssm=ssm)
     base_env = env.unwrapped
     x_pos, _xdot, theta, _thetadot = np.asarray(state, dtype=float).reshape(4)
     return bool(
@@ -667,7 +758,7 @@ def step_cartpole_rollout(
             ssm=ssm,
             tau=ssm.real_tau,
         )
-        if cartpole_is_terminated(next_state, env):
+        if cartpole_is_terminated(next_state, env, ssm=ssm):
             terminated = True
             break
 
@@ -687,6 +778,9 @@ def step_cartpole_rollout(
         base_env.steps_beyond_terminated += 1
         reward = -1.0 if bool(getattr(base_env, "_sutton_barto_reward", False)) else 0.0
 
+    if reward == 1.0 and not bool(getattr(base_env, "_sutton_barto_reward", False)):
+        reward = cartpole_step_reward(next_state, ssm=ssm)
+
     obs = np.asarray(next_state, dtype=np.float32)
     if isinstance(env, gym.ObservationWrapper):
         obs = np.asarray(env.observation(obs), dtype=np.float32)
@@ -697,7 +791,34 @@ def cartpole_model_tag(ssm: CartPoleLinearSSM) -> str:
     """Return a filename-safe tag for the real/filter time-scale split."""
     real_tag = str(float(ssm.real_tau)).replace(".", "p")
     filter_tag = str(float(ssm.tau)).replace(".", "p")
-    return f"real{real_tag}_filter{filter_tag}_sub{int(ssm.real_substeps)}"
+    tag = f"real{real_tag}_filter{filter_tag}_sub{int(ssm.real_substeps)}"
+    if ssm.wall_position is not None:
+        tag += f"_wall{ssm.wall_position:g}_e{ssm.wall_restitution:g}_center{ssm.center_reward_weight:g}"
+    return tag.replace(".", "p")
+
+
+def cartpole_experiment_metadata(*, ssm: CartPoleLinearSSM, model_path: str, settings: dict) -> dict:
+    """Record the physical model, exact policy weights and experiment settings.
+
+    A short digest of this payload separates centered-policy results from old
+    caches, and also invalidates caches after retraining or changing the search.
+    Full metadata accompanies each artifact so the short filename is auditable.
+    """
+    physics = {key: value for key, value in asdict(ssm).items() if not isinstance(value, np.ndarray)}
+    payload = dict(
+        protocol="cartpole_centered_posterior_softsearch_v2",
+        attack_objective="nominal_kf_bellman_hard_actions_v1",
+        environment=physics, model_path=str(Path(model_path).resolve()),
+        model_sha256=hashlib.sha256(Path(model_path).read_bytes()).hexdigest(),
+        settings=settings,
+    )
+    return json.loads(json.dumps(payload, default=lambda value: value.tolist(), sort_keys=True))
+
+
+def cartpole_experiment_tag(metadata: dict) -> str:
+    """Keep Windows artifact paths short while fingerprinting the full setup."""
+    serialized = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+    return "centered_" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
 def linearize_cartpole_discrete_dynamics(
@@ -968,7 +1089,51 @@ def sample_random_attack_in_ellipsoid(
     )
 
 
-def expected_critic_value_mc(
+def estimated_bellman_action_returns(
+    *,
+    model: DQN,
+    nominal_state: np.ndarray,
+    ssm: CartPoleLinearSSM,
+    current_step_index: int,
+    max_episode_steps: int,
+    device: str,
+) -> np.ndarray:
+    """Evaluate both actions at the fixed, unattacked-observation KF estimate.
+
+    This is the deterministic-plant analogue of RL's estimated-return attack.
+    It does not use the simulator hidden state or the candidate attacked mean.
+    Integrate the same fine plant substeps and optional wall contacts, check
+    the configured termination rule, and use the shared reward (including
+    optional centering). As in RL, terminal/horizon returns
+    have no value bootstrap. DQN gamma is distinct from KF discount_delta.
+    """
+    next_states = []
+    nonterminal = []
+    for action in (0, 1):
+        next_state = np.asarray(nominal_state, dtype=np.float32).copy()
+        terminated = False
+        for _ in range(ssm.real_substeps):
+            next_state = cartpole_discrete_dynamics(
+                state=next_state, force=action_to_force(action, ssm.force_mag),
+                ssm=ssm, tau=ssm.real_tau,
+            )
+            terminated = cartpole_state_is_terminated(next_state, ssm=ssm)
+            if terminated:
+                break
+        next_states.append(next_state)
+        nonterminal.append(not terminated and current_step_index + 1 < max_episode_steps)
+    # Match the same reward and contact dynamics used to train/run the policy.
+    returns = np.asarray([cartpole_step_reward(s, ssm=ssm) for s in next_states], dtype=np.float32)
+    mask = np.asarray(nonterminal, dtype=bool)
+    if np.any(mask):
+        with torch.no_grad():
+            states_t = torch.as_tensor(np.asarray(next_states)[mask], device=device)
+            values = critic_state_values(model, states_t).cpu().numpy()
+        returns[mask] += float(model.gamma) * values
+    return returns
+
+
+def expected_estimated_return_mc(
     *,
     model: DQN,
     obs_adv_torch: torch.Tensor,
@@ -976,9 +1141,19 @@ def expected_critic_value_mc(
     P_pred: np.ndarray,
     R: np.ndarray,
     xi_torch: torch.Tensor,
-) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
+    action_returns: torch.Tensor,
+    policy_temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
     """
-    Return the posterior expected critic value induced by an attacked state observation.
+    Score perceived greedy actions using fixed nominal-state Bellman returns.
+
+    The first result is the actual hard-action Monte Carlo objective. The second
+    is a differentiable softmax surrogate used ONLY to find search directions
+    (and break equal-hard-score ties). Neither changes the executed DQN action.
+    Base Gaussian draws and nominal-state action returns stay fixed across PGD
+    iterations. Posterior samples move with the candidate posterior mean.
+    Candidate scoring averages sampled greedy actions; the deployed controller
+    instead executes the greedy action at the filtered mean.
     """
     dev = obs_adv_torch.device
 
@@ -998,14 +1173,16 @@ def expected_critic_value_mc(
     L_np = sqrtm_psd(P_post_np)
     L_t = torch.tensor(L_np, dtype=torch.float32, device=dev)
 
-    x_samples = m_post_t.unsqueeze(0) + xi_torch @ L_t.T
-    value_batch = critic_state_values(model, x_samples)
-    mu_value = value_batch.mean()
+    s_samples = m_post_t.unsqueeze(0) + xi_torch @ L_t.T
+    perceived_q = model.q_net(s_samples)
+    hard_value = action_returns[perceived_q.argmax(dim=1)].mean()
+    probabilities = torch.softmax(perceived_q / float(policy_temperature), dim=1)
+    soft_value = (probabilities @ action_returns).mean()
 
-    return mu_value, m_post_t.detach().cpu().numpy().astype(np.float32), P_post_np
+    return hard_value, soft_value, m_post_t.detach().cpu().numpy().astype(np.float32), P_post_np
 
 
-def pgd_attack_on_expected_value(
+def estimated_return_pgd_attack_observation(
     *,
     model: DQN,
     obs_nom: np.ndarray,
@@ -1019,15 +1196,40 @@ def pgd_attack_on_expected_value(
     pgd_step_size: float,
     mc_samples: int,
     rng_seed: int,
+    ssm: CartPoleLinearSSM,
+    current_step_index: int,
+    max_episode_steps: int,
+    policy_temperature: float,
     device: str = "cpu",
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """
-    Approximately solve the worst-case observation attack inside the ellipsoid.
+    Minimize the estimated Bellman return of actions induced by false beliefs.
+
+    Compute m_nominal = KF(obs_nom) ONCE, before projecting/changing obs_nom.
+    A candidate only changes the perceived posterior and hence chosen actions;
+    the state used to evaluate their physical consequences never changes.
+    This preserves RL's posterior expectation, rather than attacking V(s_adv).
+    For a discrete DQN, a softmax surrogate supplies the gradient; the returned
+    candidate is the lowest HARD-action expected return encountered (ties use
+    the soft score). The estimator is approximate and need not find the global
+    minimum. No true-state oracle is used.
     """
+    if policy_temperature <= 0 or pgd_steps < 1 or mc_samples < 1 or pgd_step_size <= 0:
+        raise ValueError("Attack temperature, iterations, samples and step size must be positive.")
+    if not 0 <= current_step_index < max_episode_steps:
+        raise ValueError("The current step must be within the configured episode horizon.")
     dev = torch.device(device)
     gen = torch.Generator(device=dev)
     gen.manual_seed(int(rng_seed))
     xi_torch = torch.randn((mc_samples, 4), generator=gen, device=dev, dtype=torch.float32)
+    nominal_state, _ = kf_update_state(
+        m_pred=m_pred, P_pred=P_pred, y_obs=obs_nom, R=R,
+    )
+    action_returns = torch.as_tensor(estimated_bellman_action_returns(
+        model=model, nominal_state=nominal_state, ssm=ssm,
+        current_step_index=current_step_index, max_episode_steps=max_episode_steps,
+        device=device,
+    ), device=dev)
 
     center = np.asarray(attack_center, dtype=np.float32).copy()
     obs_curr_np = project_to_attack_region(
@@ -1038,23 +1240,36 @@ def pgd_attack_on_expected_value(
     )
 
     best_obs = obs_curr_np.copy()
-    best_obj = None
+    best_score = (float("inf"), float("inf"))
     best_m_post = None
     best_P_post = None
 
-    for _ in range(pgd_steps):
+    # Include the starting point and each projected update. Ranking the exact
+    # hard objective prevents a lower surrogate score from hiding a worse attack.
+    for iteration in range(pgd_steps + 1):
         obs_t = torch.tensor(obs_curr_np, dtype=torch.float32, device=dev, requires_grad=True)
-        mu_value_t, m_post_np, P_post_np = expected_critic_value_mc(
+        hard_value_t, soft_value_t, m_post_np, P_post_np = expected_estimated_return_mc(
             model=model,
             obs_adv_torch=obs_t,
             m_pred=m_pred,
             P_pred=P_pred,
             R=R,
             xi_torch=xi_torch,
+            action_returns=action_returns,
+            policy_temperature=policy_temperature,
         )
 
-        mu_value_t.backward()
-        grad = obs_t.grad.detach().cpu().numpy().astype(np.float32)
+        score = (float(hard_value_t.detach().item()), float(soft_value_t.detach().item()))
+        if score < best_score:
+            best_score = score
+            best_obs = obs_curr_np.copy()
+            best_m_post = m_post_np.copy()
+            best_P_post = P_post_np.copy()
+        if iteration == pgd_steps:
+            break
+        # Request only the observation gradient; do not accumulate parameter
+        # gradients in the pretrained critic while repeatedly solving attacks.
+        grad = torch.autograd.grad(soft_value_t, obs_t)[0].detach().cpu().numpy()
         obs_next = obs_curr_np - float(pgd_step_size) * grad
 
         obs_next = project_to_attack_region(
@@ -1064,33 +1279,9 @@ def pgd_attack_on_expected_value(
             epsilon=attack_eps,
         )
 
-        obj_val = float(mu_value_t.detach().cpu().item())
-        if best_obj is None or obj_val < best_obj:
-            best_obj = obj_val
-            best_obs = obs_curr_np.copy()
-            best_m_post = m_post_np.copy()
-            best_P_post = P_post_np.copy()
-
         obs_curr_np = obs_next.astype(np.float32)
 
-    obs_t = torch.tensor(obs_curr_np, dtype=torch.float32, device=dev, requires_grad=True)
-    mu_value_t, m_post_np, P_post_np = expected_critic_value_mc(
-        model=model,
-        obs_adv_torch=obs_t,
-        m_pred=m_pred,
-        P_pred=P_pred,
-        R=R,
-        xi_torch=xi_torch,
-    )
-    obj_val = float(mu_value_t.detach().cpu().item())
-
-    if best_obj is None or obj_val < best_obj:
-        best_obj = obj_val
-        best_obs = obs_curr_np.copy()
-        best_m_post = m_post_np.copy()
-        best_P_post = P_post_np.copy()
-
-    return best_obs, float(best_obj), best_m_post, best_P_post
+    return best_obs, best_score[0], best_m_post, best_P_post
 
 
 def make_pgd_boundary_stats() -> dict[str, int | float]:
@@ -1220,6 +1411,7 @@ def rollout_episode_return_attacked(
     pgd_steps: int,
     pgd_step_size: float,
     mc_samples: int,
+    policy_temperature: float,
     c_scale: float,
     omega_h: float,
     omega_o: float,
@@ -1290,7 +1482,7 @@ def rollout_episode_return_attacked(
         if do_attack:
             fallback_stats["attack_attempts"] += 1
             if attack_mode == "pgd":
-                y_used, _obj_star, m_post_attack, P_post_attack = pgd_attack_on_expected_value(
+                y_used, _obj_star, m_post_attack, P_post_attack = estimated_return_pgd_attack_observation(
                     model=model,
                     obs_nom=y_noisy,
                     m_pred=m_pred,
@@ -1302,7 +1494,10 @@ def rollout_episode_return_attacked(
                     pgd_steps=pgd_steps,
                     pgd_step_size=pgd_step_size,
                     mc_samples=mc_samples,
+                    policy_temperature=policy_temperature,
                     rng_seed=int(seed) + 10_000 * step_idx,
+                    ssm=ssm, current_step_index=step_idx,
+                    max_episode_steps=int(env.spec.max_episode_steps or 500),
                     device=device,
                 )
             elif attack_mode == "random":
@@ -1428,6 +1623,7 @@ def compute_accumulated_reward_data_with_wolf(
     n_episodes: int,
     seed0: int,
     model_path: str,
+    ssm: CartPoleLinearSSM,
     obs_noise_std: np.ndarray,
     attack_eps: float,
     attack_prob: float,
@@ -1441,6 +1637,7 @@ def compute_accumulated_reward_data_with_wolf(
     mc_samples: int,
     pgd_boundary_tol: float,
     c_scales: tuple[float, ...],
+    policy_temperature: float,
     omega_h: float,
     omega_o: float,
     delta_threshold: float,
@@ -1466,7 +1663,7 @@ def compute_accumulated_reward_data_with_wolf(
 
     device_t = torch.device(device)
     model = load_cartpole_policy(model_path, device_t)
-    ssm = build_cartpole_linear_ssm()
+    # The caller supplies the same centered plant used by the policy and attack.
     R, legacy_Q = build_filter_covariances(
         meas_std=kf_meas_std,
         proc_std=kf_proc_std,
@@ -1547,6 +1744,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1572,6 +1770,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1597,6 +1796,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1622,6 +1822,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1647,6 +1848,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1672,6 +1874,7 @@ def compute_accumulated_reward_data_with_wolf(
             pgd_steps=pgd_steps,
             pgd_step_size=pgd_step_size,
             mc_samples=mc_samples,
+            policy_temperature=policy_temperature,
             c_scale=0.0,
             omega_h=omega_h,
             omega_o=omega_o,
@@ -1739,6 +1942,7 @@ def compute_accumulated_reward_data_with_wolf(
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
                 mc_samples=mc_samples,
+                policy_temperature=policy_temperature,
                 c_scale=float(c_scale),
                 omega_h=omega_h,
                 omega_o=omega_o,
@@ -1764,6 +1968,7 @@ def compute_accumulated_reward_data_with_wolf(
                 pgd_steps=pgd_steps,
                 pgd_step_size=pgd_step_size,
                 mc_samples=mc_samples,
+                policy_temperature=policy_temperature,
                 c_scale=float(c_scale),
                 omega_h=omega_h,
                 omega_o=omega_o,
@@ -1810,7 +2015,12 @@ def compute_accumulated_reward_data_with_wolf(
     data: dict[str, np.ndarray | float | int] = {
         "n_episodes": int(n_episodes),
         "seed0": int(seed0),
-        "scenario_tag": np.asarray("obs010-022-005-022_nofallback"),
+        "scenario_tag": np.asarray(cartpole_model_tag(ssm)),
+        "environment_json": np.asarray(json.dumps(cartpole_experiment_metadata(
+            ssm=ssm, model_path=model_path, settings={},
+        ))),
+        "attack_objective": np.asarray("nominal_kf_bellman_hard_actions_v1"),
+        "policy_temperature": float(policy_temperature),
         "attack_eps": float(attack_eps),
         "attack_prob": float(attack_prob),
         "pgd_replace_by_real_pct": float(pgd_replace_pct),
@@ -1878,7 +2088,7 @@ def build_panel_specifications(
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
         ("Attack + KF", "acc_attack_kf"),
-        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Random ellipsoid perturbation + KF", "acc_random_kf"),
     ]
 
     attack_spec = [
@@ -1905,12 +2115,12 @@ def build_panel_specifications(
     random_spec = [
         ("Noise-Free", "acc_clean"),
         ("Noise + KF", "acc_noisy_kf"),
-        (r"Boundary $\epsilon$-perturbation + KF", "acc_random_kf"),
+        (r"Random ellipsoid perturbation + KF", "acc_random_kf"),
     ]
     random_spec.extend(
         [
             (
-                rf"Boundary $\epsilon$-perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
+                rf"Random ellipsoid perturbation + cov-adapt ($\lambda={c_scale:g}\lambda_{{\max}}$)",
                 f"acc_random_cov_{c_scale:g}",
             )
             for c_scale in c_scales
@@ -1918,8 +2128,8 @@ def build_panel_specifications(
     )
     random_spec.extend(
         [
-            (r"Boundary $\epsilon$-perturbation + WoLF-IMQ", "acc_random_wolf_imq"),
-            (r"Boundary $\epsilon$-perturbation + WoLF-TMD", "acc_random_wolf_tmd"),
+            (r"Random ellipsoid perturbation + WoLF-IMQ", "acc_random_wolf_imq"),
+            (r"Random ellipsoid perturbation + WoLF-TMD", "acc_random_wolf_tmd"),
         ]
     )
     return baseline_spec, attack_spec, random_spec
@@ -2206,7 +2416,13 @@ def main() -> None:
     matching the style requested in this repository.
     """
     device = "cpu"
-    model_path = ensure_downloaded_cartpole_checkpoint()
+    torch.set_num_threads(1)
+    model_path = str(Path(CURRENT_DIR) / "outputs/saved_models/sb3_dqn_cartpole_centered_v1/dqn-CartPole-centered.zip")
+    wall_position = 2.4
+    wall_restitution = 0.0
+    center_reward_weight = 0.8
+    filter_tau = 0.02
+    real_tau = 0.01
 
     # Observation noise in raw CartPole state coordinates:
     # [x, xdot, theta, thetadot].
@@ -2247,10 +2463,11 @@ def main() -> None:
         dtype=float,
     )
 
-    # PGD on the posterior expected DQN value.
+    # Estimated-return PGD: perceived actions, fixed nominal KF reference.
     pgd_steps = 20
     pgd_step_size = 0.34
     mc_samples = 64
+    policy_temperature = 1.0  # Softmax used only for the attack search gradient.
     pgd_boundary_tol = 0.1
 
     # Episodes used for the benchmark. Increase them for a more stable figure.
@@ -2262,49 +2479,37 @@ def main() -> None:
     omega_h = 0.50
     omega_o = 0.50
     delta_threshold = 0.20
-    # Use the standalone WoLF sweep choice:
-    # IMQ is best on the 75% branch, while TMD is best on the 95% branch.
-    # We therefore keep both WoLF families in the benchmark and tune their
-    # attack and random-epsilon branches separately.
+    # Fixed reference thresholds, rerun with the centered policy. The separate
+    # defense benchmark retunes WoLF on its own held-out tuning seeds.
     wolf_imq_soft_threshold_attack = 0.60
     wolf_imq_soft_threshold_random = 0.45
     wolf_tmd_threshold_attack = 3.0
     wolf_tmd_threshold_random = 2.6
-    ssm = build_cartpole_linear_ssm()
+    ssm = build_cartpole_linear_ssm(
+        filter_tau=filter_tau, real_tau=real_tau, wall_position=wall_position,
+        wall_restitution=wall_restitution, center_reward_weight=center_reward_weight,
+    )
+    from train_cartpole_centered import verify_centered_checkpoint
+    verify_centered_checkpoint(Path(model_path), ssm=ssm)
     force_cache = False
-    scenario_tag = f"obs010-022-005-022_nofallback_{cartpole_model_tag(ssm)}"
+    experiment = cartpole_experiment_metadata(ssm=ssm, model_path=model_path, settings=dict(
+        obs_noise_std=obs_noise_std, attack_prob=attack_prob, attack_eps_values=attack_eps_values,
+        discount_delta=discount_delta, kf_meas_std=kf_meas_std, kf_meas_corr=kf_meas_corr,
+        pgd_steps=pgd_steps, pgd_step_size=pgd_step_size, mc_samples=mc_samples,
+        policy_temperature=policy_temperature, pgd_boundary_tol=pgd_boundary_tol,
+        n_episodes=n_episodes, seed0=seed0, c_scales=c_scales, omega_h=omega_h,
+        omega_o=omega_o, delta_threshold=delta_threshold,
+        wolf_thresholds=[wolf_imq_soft_threshold_attack, wolf_imq_soft_threshold_random,
+                         wolf_tmd_threshold_attack, wolf_tmd_threshold_random],
+    ))
+    scenario_tag = cartpole_experiment_tag(experiment)
 
     out_dir = figures_dir_for(os.path.dirname(os.path.abspath(__file__)))
-    c_tag = "-".join(f"{value:g}" for value in c_scales).replace(".", "p")
-    eps_tag = "-".join(str(value).replace(".", "p") for value in attack_eps_values)
-    imq_attack_tag = str(wolf_imq_soft_threshold_attack).replace(".", "p")
-    imq_random_tag = str(wolf_imq_soft_threshold_random).replace(".", "p")
-    tmd_attack_tag = str(wolf_tmd_threshold_attack).replace(".", "p")
-    tmd_random_tag = str(wolf_tmd_threshold_random).replace(".", "p")
-
-    outpath = os.path.join(
-        out_dir,
-        (
-            "comparison_cartpole_two_eps_wolf_"
-            f"{scenario_tag}_delta{str(discount_delta).replace('.', 'p')}_"
-            f"N{n_episodes}_p{attack_prob}_eps{eps_tag}_c{c_tag}_"
-            f"imqa{imq_attack_tag}_imqr{imq_random_tag}_"
-            f"tmda{tmd_attack_tag}_tmdr{tmd_random_tag}.png"
-        ),
-    )
-
     data_by_epsilon: dict[float, dict[str, np.ndarray | float | int]] = {}
+    # Avoid embedding every numeric parameter in an overlong Windows path.
+    outpath = os.path.join(out_dir, f"comparison_cartpole_{scenario_tag}.png")
     for attack_eps in attack_eps_values:
-        single_eps_outpath = os.path.join(
-            out_dir,
-            (
-                "comparison_cartpole_wolf_"
-                f"{scenario_tag}_delta{str(discount_delta).replace('.', 'p')}_"
-                f"N{n_episodes}_p{attack_prob}_eps{str(attack_eps).replace('.', 'p')}_"
-                f"c{c_tag}_imqa{imq_attack_tag}_imqr{imq_random_tag}_"
-                f"tmda{tmd_attack_tag}_tmdr{tmd_random_tag}.png"
-            ),
-        )
+        single_eps_outpath = os.path.join(out_dir, f"comparison_cartpole_{scenario_tag}_eps{attack_eps:g}.png")
         data_path = data_path_for_plot(single_eps_outpath)
 
         def compute_data_for_epsilon(attack_eps_value: float = float(attack_eps)) -> dict[str, np.ndarray | float | int]:
@@ -2312,6 +2517,7 @@ def main() -> None:
                 n_episodes=n_episodes,
                 seed0=seed0,
                 model_path=model_path,
+                ssm=ssm,
                 obs_noise_std=obs_noise_std,
                 attack_eps=attack_eps_value,
                 attack_prob=attack_prob,
@@ -2324,6 +2530,7 @@ def main() -> None:
                 pgd_step_size=pgd_step_size,
                 pgd_boundary_tol=pgd_boundary_tol,
                 mc_samples=mc_samples,
+                policy_temperature=policy_temperature,
                 c_scales=c_scales,
                 omega_h=omega_h,
                 omega_o=omega_o,
@@ -2340,6 +2547,7 @@ def main() -> None:
             compute_data_for_epsilon,
             force=force_cache,
         )
+    Path(outpath).with_suffix(".json").write_text(json.dumps(experiment, indent=2), encoding="utf-8")
 
     plot_accumulated_reward_comparison_two_epsilons_with_wolf(
         data_by_epsilon=data_by_epsilon,

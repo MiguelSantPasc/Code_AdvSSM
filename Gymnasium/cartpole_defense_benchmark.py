@@ -60,8 +60,8 @@ Discounted-covariance rationale:
    - `delta = 0.93  -> mean NIS = 3.9848`,
    - `delta = 0.94  -> mean NIS = 4.0046`.
    Since `|4.0046 - 4| < |3.9848 - 4|`, the current default `delta = 0.94`
-   remains the better calibrated fixed choice for this scenario, so this script
-   keeps it unchanged.
+   was the closer choice in that earlier scenario. This script retains 0.94,
+   but does not claim a new NIS calibration for the centered policy and stops.
 
 Experimental protocol:
 1. The clean environment dynamics are a finer-step CartPole rollout:
@@ -80,15 +80,35 @@ Experimental protocol:
    attack radius is
 
       epsilon = chi2.ppf(0.95, df=4) ~= 9.49.
+6. The estimated-return PGD attack evaluates perceived greedy actions at a
+   fixed nominal KF estimate from the current observation before manipulation.
+   Its Bellman objective matches RL's estimated-return attack; a softmax
+   surrogate provides gradients for the discrete DQN, while candidate scores
+   use hard actions. Output/cache tags distinguish it from the former
+   posterior-value attack and its old WoLF tuning results.
+7. The policy is the separately adapted centered DQN. Cart stops are at +/-2.4
+   m and reward is 1 - 0.8*(x_next/2.4)^2. All methods, including clean and
+   random baselines, share this plant and reward. The first angle failure ends
+   an episode; there is no post-failure visualization continuation here.
+8. WoLF tuning and evaluation use disjoint seeds. Policy hashes, physics and
+   complete settings fingerprint caches and are persisted with the results.
+   The sampled hard-action attack score remains distinct from execution of
+   the greedy action at the defended posterior mean.
+9. The default evaluation uses 200 seeds per method. Windows process workers
+   run independent seed batches with one Torch thread each; selection finishes
+   before evaluation starts. The worker count changes scheduling only.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import gymnasium as gym
@@ -117,7 +137,7 @@ ATTACK_PROBABILITY = 0.20
 BENCHMARK_LAMBDAS = (0.5, 1.0, 2.0)
 BENCHMARK_COVERAGE = 0.95
 N_TUNING_EPISODES = 6
-N_EPISODES = 10
+N_EPISODES = 200
 STRONG_WOLF_WEIGHT_THRESHOLD = 0.25
 
 
@@ -149,6 +169,7 @@ class BenchmarkConfig:
     kf_proc_corr: np.ndarray
     pgd_steps: int
     pgd_step_size: float
+    policy_temperature: float
     mc_samples: int
     pgd_boundary_tol: float
     omega_h: float
@@ -163,6 +184,13 @@ class BenchmarkConfig:
     n_episodes: int
     seed0: int
     scenario_tag: str
+    model_path: str
+    wall_position: float
+    wall_restitution: float
+    center_reward_weight: float
+    filter_tau: float
+    real_tau: float
+    tuning_seed0: int
 
 
 @dataclass(frozen=True)
@@ -241,6 +269,7 @@ def build_default_config() -> BenchmarkConfig:
         kf_proc_corr=kf_proc_corr,
         pgd_steps=20,
         pgd_step_size=0.34,
+        policy_temperature=1.0,
         mc_samples=64,
         pgd_boundary_tol=0.10,
         omega_h=0.50,
@@ -254,15 +283,47 @@ def build_default_config() -> BenchmarkConfig:
         n_tuning_episodes=int(N_TUNING_EPISODES),
         n_episodes=int(N_EPISODES),
         seed0=int(BASE_SEED),
-        scenario_tag="obs010-022-005-022_nofallback_real001_filter002_sub2",
+        scenario_tag="centered_cartpole_v1",
+        model_path=str(Path(CURRENT_DIR) / "outputs/saved_models/sb3_dqn_cartpole_centered_v1/dqn-CartPole-centered.zip"),
+        wall_position=2.4,
+        wall_restitution=0.0,
+        center_reward_weight=0.8,
+        filter_tau=0.02,
+        real_tau=0.01,
+        tuning_seed0=int(BASE_SEED) + 100_000,
     )
+
+
+def benchmark_ssm(config: BenchmarkConfig) -> cartpole_mod.CartPoleLinearSSM:
+    """Use the video's physical stops and centered reward in every rollout."""
+    return cartpole_mod.build_cartpole_linear_ssm(
+        filter_tau=config.filter_tau, real_tau=config.real_tau,
+        wall_position=config.wall_position, wall_restitution=config.wall_restitution,
+        center_reward_weight=config.center_reward_weight,
+    )
+
+
+def benchmark_metadata(config: BenchmarkConfig) -> dict:
+    """Fingerprint weights, physics, attack settings and the actual tuning grid."""
+    return cartpole_mod.cartpole_experiment_metadata(
+        ssm=benchmark_ssm(config), model_path=config.model_path,
+        settings={**asdict(config), "wolf_grid": build_wolf_sweep_configurations()},
+    )
+
+
+def load_benchmark_policy(config: BenchmarkConfig):
+    """Reject legacy or mismatched weights before tuning or collecting results."""
+    from train_cartpole_centered import verify_centered_checkpoint
+    ssm = benchmark_ssm(config)
+    verify_centered_checkpoint(Path(config.model_path), ssm=ssm)
+    model = cartpole_mod.load_cartpole_policy(config.model_path, torch.device("cpu"))
+    model.policy.set_training_mode(False)
+    return model, ssm
 
 
 def benchmark_case_tag(config: BenchmarkConfig) -> str:
     """Return the file tag for the configured benchmark case."""
-    eps_tag = float_tag(config.attack_eps, digits=3)
-    delta_tag = float_tag(config.discount_delta, digits=3)
-    return f"eps{eps_tag}_{config.scenario_tag}_delta{delta_tag}_n{int(config.n_episodes)}"
+    return f"{cartpole_mod.cartpole_experiment_tag(benchmark_metadata(config))}_n{config.n_episodes}"
 
 
 def default_output_prefix(config: BenchmarkConfig) -> str:
@@ -385,7 +446,7 @@ def success_from_episode(
 ) -> bool:
     """Return whether the episode reached the time limit without failure."""
     max_steps = int(getattr(env.spec, "max_episode_steps", 500) or 500)
-    return bool(truncated or steps >= max_steps) and not bool(terminated and steps < max_steps)
+    return bool(truncated or steps >= max_steps) and not bool(terminated)
 
 
 def build_wolf_sweep_configurations() -> list[dict[str, Any]]:
@@ -569,7 +630,7 @@ def rollout_benchmark_episode(
             attack_center = np.asarray(m_pred, dtype=np.float32)
             attack_sigma = cartpole_mod.project_to_psd(np.asarray(P_pred, dtype=float) + np.asarray(R, dtype=float))
             if method.attack_type == "pgd_estimated":
-                y_filter, _obj_star, m_post_attack, P_post_attack = cartpole_mod.pgd_attack_on_expected_value(
+                y_filter, _obj_star, m_post_attack, P_post_attack = cartpole_mod.estimated_return_pgd_attack_observation(
                     model=model,
                     obs_nom=y_noisy,
                     m_pred=m_pred,
@@ -581,6 +642,9 @@ def rollout_benchmark_episode(
                     pgd_steps=int(config.pgd_steps),
                     pgd_step_size=float(config.pgd_step_size),
                     mc_samples=int(config.mc_samples),
+                    policy_temperature=float(config.policy_temperature),
+                    ssm=ssm, current_step_index=int(step_idx),
+                    max_episode_steps=int(env.spec.max_episode_steps or 500),
                     rng_seed=int(seed) + 10_000 * int(step_idx),
                     device=device,
                 )
@@ -1056,13 +1120,16 @@ def save_wolf_selection_artifacts(
         "wolf_tmd_random": scenario_selected_parameters["wolf_tmd_random"],
         "wolf_clean": distinct_selection["wolf_clean"],
         "wolf_adversarial": distinct_selection["wolf_adversarial"],
+        "attack_objective": "nominal_kf_bellman_hard_actions_v1",
+        "policy_temperature": float(config.policy_temperature),
         "selection_metric": "maximize attacked mean return; tie-break by lower state error, better noisy return, lower return variability",
         "scenario_selection_metric": "for each scenario and WoLF kind: maximize scenario mean return; tie-break by lower state error, then lower return variability",
         "distinct_selection_metric": "clean: maximize no-attack mean return; adversarial: maximize attacked mean return, excluding the clean winner when possible",
         "coverage": float(config.coverage),
         "epsilon": float(config.attack_eps),
         "n_tuning_episodes": int(config.n_tuning_episodes),
-        "tuning_seeds": [int(config.seed0) + idx for idx in range(int(config.n_tuning_episodes))],
+        "tuning_seeds": [int(config.tuning_seed0) + idx for idx in range(int(config.n_tuning_episodes))],
+        "experiment": benchmark_metadata(config),
     }
     with open(json_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
@@ -1083,6 +1150,7 @@ def run_wolf_sweep(
     ssm: cartpole_mod.CartPoleLinearSSM,
     R: np.ndarray,
     config: BenchmarkConfig,
+    executor: ProcessPoolExecutor | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Evaluate the WoLF sweep over the clean-noisy, PGD, and random scenarios."""
     rows: list[dict[str, Any]] = []
@@ -1097,8 +1165,14 @@ def run_wolf_sweep(
                 wolf_parameters=dict(parameters),
             )
             episode_results: list[MethodEpisodeResult] = []
-            for episode_idx in range(int(config.n_tuning_episodes)):
-                seed = int(config.seed0) + episode_idx
+            tuning_indices = range(int(config.n_tuning_episodes))
+            if executor is not None:
+                jobs = [(config, method, [int(config.tuning_seed0) + idx], 500) for idx in tuning_indices]
+                for batch in executor.map(run_episode_batch, jobs):
+                    episode_results.extend(batch)
+                tuning_indices = ()
+            for episode_idx in tuning_indices:
+                seed = int(config.tuning_seed0) + episode_idx
                 env = gym.make("CartPole-v1")
                 try:
                     episode_results.append(
@@ -1155,12 +1229,15 @@ def ensure_wolf_params_json(
     model: cartpole_mod.DQN,
     ssm: cartpole_mod.CartPoleLinearSSM,
     R: np.ndarray,
+    executor: ProcessPoolExecutor | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     """Ensure the case-specific CartPole WoLF JSON exists, running tuning if needed."""
     json_path = best_wolf_json_path(config)
     if os.path.exists(json_path):
         with open(json_path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        if payload.get("experiment") != benchmark_metadata(config):
+            raise ValueError("WoLF cache metadata does not match the requested experiment.")
         return payload, {"wolf_json_path": json_path}
 
     output_prefix = default_wolf_output_prefix(config)
@@ -1173,6 +1250,7 @@ def ensure_wolf_params_json(
         ssm=ssm,
         R=R,
         config=config,
+        executor=executor,
     )
     selected_parameters = select_best_wolf_parameters(full_df=full_df)
     scenario_selected_parameters = select_best_wolf_parameters_per_scenario(full_df=full_df)
@@ -1208,11 +1286,10 @@ def run_wolf_only(
     *,
     config: BenchmarkConfig,
     output_prefix: str,
+    workers: int = 1,
 ) -> dict[str, str]:
     """Run only the standalone WoLF sweep and persist the richer ranking outputs."""
-    model_path = cartpole_mod.ensure_downloaded_cartpole_checkpoint()
-    model = cartpole_mod.load_cartpole_policy(model_path, torch.device("cpu"))
-    ssm = cartpole_mod.build_cartpole_linear_ssm()
+    model, ssm = load_benchmark_policy(config)
     R, _legacy_Q = cartpole_mod.build_filter_covariances(
         meas_std=config.kf_meas_std,
         proc_std=config.kf_proc_std,
@@ -1223,12 +1300,10 @@ def run_wolf_only(
         "[cartpole_wolf_benchmark] "
         f"mode=wolf | output={output_prefix} | n_tuning_episodes={int(config.n_tuning_episodes)}"
     )
-    full_df, ranking_df = run_wolf_sweep(
-        model=model,
-        ssm=ssm,
-        R=R,
-        config=config,
-    )
+    with ProcessPoolExecutor(max_workers=workers) if workers > 1 else nullcontext(None) as executor:
+        full_df, ranking_df = run_wolf_sweep(
+            model=model, ssm=ssm, R=R, config=config, executor=executor,
+        )
     selected_parameters = select_best_wolf_parameters(full_df=full_df)
     scenario_selected_parameters = select_best_wolf_parameters_per_scenario(full_df=full_df)
     clean_ranking_df = clean_selection_ranking(full_df)
@@ -1446,11 +1521,11 @@ def plot_benchmark_dynamics(
     pgd_method_name = "PGD estimated + CovAdap, lambda=0.5"
     contour_method_name = "Random contour + CovAdap, lambda=0.5"
     gamma_label_map = {
-        pgd_method_name: r"Attack on $Q^\pi(m_T,a_T)$ + DirCovAdapt",
+        pgd_method_name: "Estimated-return attack + DirCovAdapt",
         contour_method_name: r"$\epsilon$ perturbation + DirCovAdapt",
     }
     perturbation_label_map = {
-        pgd_method_name: r"Attack on $Q^\pi(m_T,a_T)$",
+        pgd_method_name: "Estimated-return attack",
         contour_method_name: r"$\epsilon$ perturbation",
     }
     color_map = {
@@ -1562,10 +1637,47 @@ def plot_benchmark_dynamics(
     plt.close(fig)
 
 
+def run_episode_batch(job: tuple) -> list[MethodEpisodeResult]:
+    """Run independent seeded episodes in a worker, preserving serial ordering.
+
+    Each batch loads fixed weights and creates fresh environments. All rollout
+    randomness is already local to the episode seed, so worker scheduling does
+    not alter the numerical experiment. A small batch amortizes checkpoint IO.
+    The explicit horizon is 500 in production and can be 3 in a smoke check.
+    """
+    config, method, seeds, max_steps = job
+    torch.set_num_threads(1)
+    model, ssm = load_benchmark_policy(config)
+    R, _ = cartpole_mod.build_filter_covariances(
+        meas_std=config.kf_meas_std, proc_std=config.kf_proc_std,
+        meas_corr=config.kf_meas_corr, proc_corr=config.kf_proc_corr,
+    )
+    results = []
+    try:
+        for seed in seeds:
+            env = gym.make("CartPole-v1", max_episode_steps=max_steps)
+            try:
+                if method.filter_type == "clean":
+                    result = rollout_clean_episode(env, model, seed=seed, ssm=ssm)
+                else:
+                    result = rollout_benchmark_episode(
+                        env, model, method, seed=seed, ssm=ssm, R=R,
+                        config=config, device="cpu",
+                    )
+                results.append(result)
+            finally:
+                env.close()
+    finally:
+        if model.get_env() is not None:
+            model.get_env().close()
+    return results
+
+
 def run_full_benchmark(
     *,
     config: BenchmarkConfig,
     output_prefix: str,
+    workers: int = 1,
 ) -> dict[str, str]:
     """Run the full CartPole defense benchmark and save all artifacts."""
     data_dir = data_dir_for(CURRENT_DIR)
@@ -1577,21 +1689,19 @@ def run_full_benchmark(
     returns_figure_path = os.path.join(figures_dir, f"{output_prefix}_returns.png")
     diagnostics_figure_path = os.path.join(figures_dir, f"{output_prefix}_dynamics.png")
 
-    model_path = cartpole_mod.ensure_downloaded_cartpole_checkpoint()
-    model = cartpole_mod.load_cartpole_policy(model_path, torch.device("cpu"))
-    ssm = cartpole_mod.build_cartpole_linear_ssm()
+    model, ssm = load_benchmark_policy(config)
     R, legacy_Q = cartpole_mod.build_filter_covariances(
         meas_std=config.kf_meas_std,
         proc_std=config.kf_proc_std,
         meas_corr=config.kf_meas_corr,
         proc_corr=config.kf_proc_corr,
     )
-    wolf_payload, wolf_artifact_paths = ensure_wolf_params_json(
-        config=config,
-        model=model,
-        ssm=ssm,
-        R=R,
-    )
+    # Complete selection first. The evaluation pool below cannot start before
+    # the compatible WoLF selection JSON has been produced and loaded.
+    with ProcessPoolExecutor(max_workers=workers) if workers > 1 else nullcontext(None) as executor:
+        wolf_payload, wolf_artifact_paths = ensure_wolf_params_json(
+            config=config, model=model, ssm=ssm, R=R, executor=executor,
+        )
     methods = build_benchmark_methods(config, wolf_params=wolf_payload)
     all_results: list[MethodEpisodeResult] = []
 
@@ -1605,41 +1715,56 @@ def run_full_benchmark(
     )
     print(
         "[cartpole_defense_benchmark] "
-        "discount audit: keeping delta=0.94 because the saved NIS calibration "
-        "already places it closer to the 4D target than delta=0.93."
+        "delta=0.94 is retained from the earlier calibration; it has not been "
+        "recalibrated for the centered policy and physical stops."
     )
     if "wolf_imq" in wolf_payload and "wolf_tmd" in wolf_payload:
         print(
             "[cartpole_defense_benchmark] "
-            f"selected WoLF IMQ={wolf_payload['wolf_imq']['selected_parameters']} | "
-            f"TMD={wolf_payload['wolf_tmd']['selected_parameters']}"
+            "scenario-specific WoLF settings: "
+            + " | ".join(
+                f"{key}={wolf_payload[key]['selected_parameters']}"
+                for key in ("wolf_imq_pgd", "wolf_tmd_pgd", "wolf_imq_random", "wolf_tmd_random")
+            )
         )
 
-    for method_index, method in enumerate(methods, start=1):
-        print(f"[cartpole_defense_benchmark] method {method_index}/{len(methods)} | {method.name}")
-        for episode_index in range(int(config.n_episodes)):
-            seed = int(config.seed0) + episode_index
-            env = gym.make("CartPole-v1")
-            if method.filter_type == "clean":
-                result = rollout_clean_episode(env, model, seed=seed, ssm=ssm)
-            else:
-                result = rollout_benchmark_episode(
-                    env,
-                    model,
-                    method,
-                    seed=seed,
-                    ssm=ssm,
-                    R=R,
-                    config=config,
-                    device="cpu",
-                )
-            all_results.append(result)
-            env.close()
-            if episode_index == 0 or episode_index + 1 == int(config.n_episodes):
-                print(
-                    "[cartpole_defense_benchmark] "
-                    f"{method.name} | episode {episode_index + 1}/{config.n_episodes}"
-                )
+    with ProcessPoolExecutor(max_workers=workers) if workers > 1 else nullcontext(None) as executor:
+        for method_index, method in enumerate(methods, start=1):
+            print(f"[cartpole_defense_benchmark] method {method_index}/{len(methods)} | {method.name}")
+            episode_indices = range(int(config.n_episodes))
+            if executor is not None:
+                seeds = [int(config.seed0) + idx for idx in episode_indices]
+                jobs = [(config, method, seeds[start:start + 5], 500) for start in range(0, len(seeds), 5)]
+                completed = 0
+                for batch in executor.map(run_episode_batch, jobs):
+                    all_results.extend(batch)
+                    completed += len(batch)
+                    if completed % 25 == 0 or completed == len(seeds):
+                        print(f"[cartpole_defense_benchmark] {method.name} | episode {completed}/{len(seeds)}", flush=True)
+                episode_indices = ()
+            for episode_index in episode_indices:
+                seed = int(config.seed0) + episode_index
+                env = gym.make("CartPole-v1")
+                if method.filter_type == "clean":
+                    result = rollout_clean_episode(env, model, seed=seed, ssm=ssm)
+                else:
+                    result = rollout_benchmark_episode(
+                        env,
+                        model,
+                        method,
+                        seed=seed,
+                        ssm=ssm,
+                        R=R,
+                        config=config,
+                        device="cpu",
+                    )
+                all_results.append(result)
+                env.close()
+                if episode_index == 0 or episode_index + 1 == int(config.n_episodes):
+                    print(
+                        "[cartpole_defense_benchmark] "
+                        f"{method.name} | episode {episode_index + 1}/{config.n_episodes}"
+                    )
 
     summary_df = aggregate_benchmark_results(all_results)
     diagnostics_df = diagnostics_to_dataframe(all_results)
@@ -1659,6 +1784,7 @@ def run_full_benchmark(
 
     np.savez_compressed(
         results_npz_path,
+        experiment_json=np.asarray(json.dumps(benchmark_metadata(config), sort_keys=True)),
         summary_columns=np.asarray(summary_df.columns.tolist(), dtype=object),
         summary_values=summary_df.to_numpy(dtype=object),
         episode_columns=np.asarray(episodes_df.columns.tolist(), dtype=object),
@@ -1667,6 +1793,8 @@ def run_full_benchmark(
         diagnostics_values=diagnostics_df.to_numpy(dtype=object),
         coverage=np.asarray([config.coverage], dtype=float),
         attack_eps=np.asarray([config.attack_eps], dtype=float),
+        attack_objective=np.asarray("nominal_kf_bellman_hard_actions_v1"),
+        policy_temperature=np.asarray([config.policy_temperature], dtype=float),
         discount_delta=np.asarray([config.discount_delta], dtype=float),
         attack_probability=np.asarray([config.attack_prob], dtype=float),
         lambdas=np.asarray(config.lambdas, dtype=float),
@@ -1708,6 +1836,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pgd-steps", type=int, default=None)
     parser.add_argument("--mc-samples", type=int, default=None)
     parser.add_argument("--output-prefix", type=str, default=None)
+    parser.add_argument("--workers", type=int, default=None)
     return parser.parse_args()
 
 
@@ -1737,13 +1866,17 @@ def config_from_args(args: argparse.Namespace) -> BenchmarkConfig:
 def main() -> None:
     """Run the CartPole defense benchmark and print the artifact paths."""
     args = parse_args()
+    torch.set_num_threads(1)
+    workers = 8 if args.workers is None else args.workers
+    if workers < 1:
+        raise ValueError("workers must be at least one")
     config = config_from_args(args)
     if args.mode == "wolf":
         output_prefix = args.output_prefix or default_wolf_output_prefix(config)
-        artifact_paths = run_wolf_only(config=config, output_prefix=output_prefix)
+        artifact_paths = run_wolf_only(config=config, output_prefix=output_prefix, workers=workers)
     else:
         output_prefix = args.output_prefix or default_output_prefix(config)
-        artifact_paths = run_full_benchmark(config=config, output_prefix=output_prefix)
+        artifact_paths = run_full_benchmark(config=config, output_prefix=output_prefix, workers=workers)
     for label, path in artifact_paths.items():
         print(f"{label}: {path}")
 

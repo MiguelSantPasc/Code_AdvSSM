@@ -1,0 +1,386 @@
+{
+  "wolf_imq": {
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.3,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    }
+  },
+  "wolf_tmd": {
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 3.0,
+      "min_weight": 1e-06
+    }
+  },
+  "wolf_imq_pgd": {
+    "config_label": "wolf_imq_tau_0p3",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.3,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "scenario": "pgd_estimated",
+    "mean_return": 176.07433145140683,
+    "mean_state_estimation_error": 0.1718501851262482
+  },
+  "wolf_imq_random": {
+    "config_label": "wolf_imq_tau_0p5",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.5,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "scenario": "random_contour",
+    "mean_return": 490.5150437173599,
+    "mean_state_estimation_error": 0.08080419118550926
+  },
+  "wolf_tmd_pgd": {
+    "config_label": "wolf_tmd_tau_2p8",
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "scenario": "pgd_estimated",
+    "mean_return": 486.4214730987056,
+    "mean_state_estimation_error": 0.07660739886675769
+  },
+  "wolf_tmd_random": {
+    "config_label": "wolf_tmd_tau_3p0",
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 3.0,
+      "min_weight": 1e-06
+    },
+    "scenario": "random_contour",
+    "mean_return": 459.8977140121023,
+    "mean_state_estimation_error": 0.09210987350559652
+  },
+  "wolf_clean": {
+    "config_label": "wolf_imq_tau_0p55",
+    "selected_parameters": {
+      "kind": "imq",
+      "imq_soft_threshold": 0.55,
+      "tmd_threshold": 2.8,
+      "min_weight": 1e-06
+    },
+    "clean_mean_return": 492.8636627159146,
+    "attacked_mean_return": 283.67350660368373
+  },
+  "wolf_adversarial": {
+    "config_label": "wolf_tmd_tau_3p0",
+    "selected_parameters": {
+      "kind": "tmd",
+      "imq_soft_threshold": 0.45,
+      "tmd_threshold": 3.0,
+      "min_weight": 1e-06
+    },
+    "clean_mean_return": 486.20561052580916,
+    "attacked_mean_return": 468.7357423263266
+  },
+  "attack_objective": "nominal_kf_bellman_hard_actions_v1",
+  "policy_temperature": 1.0,
+  "selection_metric": "maximize attacked mean return; tie-break by lower state error, better noisy return, lower return variability",
+  "scenario_selection_metric": "for each scenario and WoLF kind: maximize scenario mean return; tie-break by lower state error, then lower return variability",
+  "distinct_selection_metric": "clean: maximize no-attack mean return; adversarial: maximize attacked mean return, excluding the clean winner when possible",
+  "coverage": 0.95,
+  "epsilon": 9.487729036781154,
+  "n_tuning_episodes": 6,
+  "tuning_seeds": [
+    20360729,
+    20360730,
+    20360731,
+    20360732,
+    20360733,
+    20360734
+  ],
+  "experiment": {
+    "attack_objective": "nominal_kf_bellman_hard_actions_v1",
+    "environment": {
+      "center_reward_weight": 0.8,
+      "force_mag": 10.0,
+      "gravity": 9.8,
+      "length": 0.5,
+      "masscart": 1.0,
+      "masspole": 0.1,
+      "real_substeps": 2,
+      "real_tau": 0.01,
+      "tau": 0.02,
+      "theta_threshold_radians": 0.20943951023931953,
+      "wall_position": 2.4,
+      "wall_restitution": 0.0,
+      "x_threshold": 2.4
+    },
+    "model_path": "C:\\Users\\Usuario\\Desktop\\Doctoradooo\\AdvSSMs\\Code_AdvSSM\\Gymnasium\\outputs\\saved_models\\sb3_dqn_cartpole_centered_v1\\dqn-CartPole-centered.zip",
+    "model_sha256": "a8a26be86ea7c47dc70baa1c3e239f1e1d8349081176c161b76979c719b6e86e",
+    "protocol": "cartpole_centered_posterior_softsearch_v2",
+    "settings": {
+      "attack_eps": 9.487729036781154,
+      "attack_prob": 0.2,
+      "center_reward_weight": 0.8,
+      "coverage": 0.95,
+      "discount_delta": 0.94,
+      "filter_tau": 0.02,
+      "gamma_threshold": 0.2,
+      "kf_meas_corr": [
+        [
+          1.0,
+          0.18,
+          0.06,
+          0.0
+        ],
+        [
+          0.18,
+          1.0,
+          0.14,
+          0.22
+        ],
+        [
+          0.06,
+          0.14,
+          1.0,
+          0.18
+        ],
+        [
+          0.0,
+          0.22,
+          0.18,
+          1.0
+        ]
+      ],
+      "kf_meas_std": [
+        0.1,
+        0.22,
+        0.05,
+        0.22
+      ],
+      "kf_proc_corr": [
+        [
+          1.0,
+          0.24,
+          0.08,
+          0.0
+        ],
+        [
+          0.24,
+          1.0,
+          0.16,
+          0.26
+        ],
+        [
+          0.08,
+          0.16,
+          1.0,
+          0.22
+        ],
+        [
+          0.0,
+          0.26,
+          0.22,
+          1.0
+        ]
+      ],
+      "kf_proc_std": [
+        0.32,
+        0.72,
+        0.16,
+        0.72
+      ],
+      "lambdas": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "mc_samples": 64,
+      "model_path": "C:\\Users\\Usuario\\Desktop\\Doctoradooo\\AdvSSMs\\Code_AdvSSM\\Gymnasium\\outputs\\saved_models\\sb3_dqn_cartpole_centered_v1\\dqn-CartPole-centered.zip",
+      "n_episodes": 200,
+      "n_tuning_episodes": 6,
+      "obs_noise_std": [
+        0.1,
+        0.22,
+        0.05,
+        0.22
+      ],
+      "omega_h": 0.5,
+      "omega_o": 0.5,
+      "pgd_boundary_tol": 0.1,
+      "pgd_step_size": 0.34,
+      "pgd_steps": 20,
+      "policy_temperature": 1.0,
+      "real_tau": 0.01,
+      "scenario_tag": "centered_cartpole_v1",
+      "seed0": 20260729,
+      "strong_wolf_weight_threshold": 0.25,
+      "tuning_seed0": 20360729,
+      "wall_position": 2.4,
+      "wall_restitution": 0.0,
+      "wolf_grid": [
+        {
+          "config_label": "wolf_imq_tau_0p3",
+          "imq_soft_threshold": 0.3,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p35",
+          "imq_soft_threshold": 0.35,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p375",
+          "imq_soft_threshold": 0.375,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p4",
+          "imq_soft_threshold": 0.4,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p425",
+          "imq_soft_threshold": 0.425,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p45",
+          "imq_soft_threshold": 0.45,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p475",
+          "imq_soft_threshold": 0.475,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p5",
+          "imq_soft_threshold": 0.5,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p55",
+          "imq_soft_threshold": 0.55,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p6",
+          "imq_soft_threshold": 0.6,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_imq_tau_0p65",
+          "imq_soft_threshold": 0.65,
+          "kind": "imq",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p4",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.4
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p5",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.5
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p6",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.6
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p7",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.7
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p75",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.75
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p8",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.8
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p85",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.85
+        },
+        {
+          "config_label": "wolf_tmd_tau_2p9",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 2.9
+        },
+        {
+          "config_label": "wolf_tmd_tau_3p0",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 3.0
+        },
+        {
+          "config_label": "wolf_tmd_tau_3p1",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 3.1
+        },
+        {
+          "config_label": "wolf_tmd_tau_3p2",
+          "imq_soft_threshold": 0.45,
+          "kind": "tmd",
+          "min_weight": 1e-06,
+          "tmd_threshold": 3.2
+        }
+      ],
+      "wolf_imq_soft_threshold_attack": 0.6,
+      "wolf_imq_soft_threshold_random": 0.45,
+      "wolf_tmd_threshold_attack": 3.0,
+      "wolf_tmd_threshold_random": 2.6
+    }
+  }
+}

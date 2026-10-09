@@ -1,0 +1,53 @@
+{
+  "environment": {
+    "tau": 0.02,
+    "real_tau": 0.01,
+    "real_substeps": 2,
+    "gravity": 9.8,
+    "masscart": 1.0,
+    "masspole": 0.1,
+    "length": 0.5,
+    "force_mag": 10.0,
+    "x_threshold": 2.4,
+    "theta_threshold_radians": 0.20943951023931953,
+    "wall_position": 2.4,
+    "wall_restitution": 0.0,
+    "center_reward_weight": 0.8
+  },
+  "seed": 20260928,
+  "total_training_steps": 120000,
+  "validation_seeds": [
+    901,
+    902
+  ],
+  "gamma": 0.99,
+  "reward": "1 - 0.8 * (x / 2.4)^2",
+  "source_checkpoint": "C:\\Users\\Usuario\\Desktop\\Doctoradooo\\AdvSSMs\\Code_AdvSSM\\Gymnasium\\outputs\\saved_models\\sb3_dqn_cartpole_v1\\dqn-CartPole-v1.zip",
+  "source_policy_validation": {
+    "mean_return": 499.24575157472486,
+    "mean_steps": 500.0,
+    "mean_abs_x": 0.09450664642767515,
+    "returns": [
+      499.25161107385503,
+      499.23989207559475
+    ],
+    "lengths": [
+      500,
+      500
+    ]
+  },
+  "selected_training_steps": 80000,
+  "validation": {
+    "mean_return": 498.24511914017904,
+    "mean_steps": 500.0,
+    "mean_abs_x": 0.14868799874710387,
+    "returns": [
+      498.28921110420373,
+      498.20102717615435
+    ],
+    "lengths": [
+      500,
+      500
+    ]
+  }
+}
